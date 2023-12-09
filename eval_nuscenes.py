@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import os
 import time
 import argparse
@@ -13,6 +14,12 @@ import nuscenesdataset
 import torch
 torch.multiprocessing.set_sharing_strategy('file_system')
 import torch.nn as nn
+from nuscenes.nuscenes import NuScenes
+from nuscenes.utils.data_classes import RadarPointCloud
+from nuscenes.utils.geometry_utils import view_points, box_in_image, BoxVisibility, transform_matrix
+from nuscenes.nuscenes import NuScenes
+from PIL import Image
+from torchvision.utils import make_grid
 from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 import torch.nn.functional as F
@@ -87,7 +94,7 @@ def balanced_ce_loss(out, target, valid):
             total_loss += loss.mean()
             normalizer += 1
     return total_loss / normalizer
-    
+
 def balanced_occ_loss(pred, occ, free):
     pos = occ.clone()
     neg = free.clone()
@@ -110,7 +117,8 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     metrics = {}
     total_loss = torch.tensor(0.0, requires_grad=True).to(device)
 
-    imgs, rots, trans, intrins, pts0, extra0, pts, extra, lrtlist_velo, vislist, tidlist, scorelist, seg_bev_g, valid_bev_g, center_bev_g, offset_bev_g, radar_data, egopose = d
+    imgs, rots, trans, intrins, pts0, extra0, pts, extra, lrtlist_velo, vislist, tidlist, scorelist, seg_bev_g, valid_bev_g, center_bev_g, offset_bev_g, radar_data, egopose, radar_per_view = d
+    import ipdb; ipdb.set_trace()
 
     B0,T,S,C,H,W = imgs.shape
     assert(T==1)
@@ -134,7 +142,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     offset_bev_g = offset_bev_g[:,0]
     radar_data = radar_data[:,0]
     egopose = egopose[:,0]
-    
+
     origin_T_velo0t = egopose.to(device) # B,T,4,4
 
     lrtlist_velo = lrtlist_velo.to(device)
@@ -169,12 +177,12 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     velo_T_cams = utils.geom.merge_rtlist(rots, trans).to(device)
     cams_T_velo = __u(utils.geom.safe_inverse(__p(velo_T_cams)))
-    
+
     cam0_T_camXs = utils.geom.get_camM_T_camXs(velo_T_cams, ind=0)
     camXs_T_cam0 = __u(utils.geom.safe_inverse(__p(cam0_T_camXs)))
     cam0_T_camXs_ = __p(cam0_T_camXs)
     camXs_T_cam0_ = __p(camXs_T_cam0)
-    
+
     xyz_cam0 = utils.geom.apply_4x4(cams_T_velo[:,0], xyz_velo0)
     rad_xyz_cam0 = utils.geom.apply_4x4(cams_T_velo[:,0], xyz_rad)
 
@@ -185,7 +193,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
         scene_centroid=scene_centroid.to(device),
         bounds=bounds,
         assert_cube=False)
-    
+
     V = xyz_velo0.shape[1]
 
     occ_mem0 = vox_util.voxelize_xyz(xyz_cam0, Z, Y, X, assert_cube=False)
@@ -242,10 +250,15 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum()
+    intersection_batch = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=(1,2,3))
     union = ((seg_bev_e_round+seg_bev_g)*valid_bev_g).clamp(0,1).sum()
+    union_batch = ((seg_bev_e_round+seg_bev_g)*valid_bev_g).clamp(0,1).sum(dim=(1,2,3))
+
 
     metrics['intersection'] = intersection.item()
+    metrics['intersection_batch'] = intersection_batch.cpu()
     metrics['union'] = union.item()
+    metrics['union_batch'] = union_batch.cpu()
     metrics['ce_loss'] = ce_loss.item()
     metrics['center_loss'] = center_loss.item()
     metrics['offset_loss'] = offset_loss.item()
@@ -268,7 +281,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
         sw.summ_flow('2_outputs/offset_bev_g', offset_bev_g, clip=10)
 
     return total_loss, metrics
-    
+
 def main(
         exp_name='eval',
         # val/test
@@ -300,7 +313,7 @@ def main(
     assert(B % len(device_ids) == 0) # batch size must be divisible by number of gpus
 
     device = 'cuda:%d' % device_ids[0]
-    
+
     ## autogen a name
     model_name = "%s" % init_dir.split('/')[-1]
     model_name += "_%d" % B
@@ -316,7 +329,7 @@ def main(
     # set up dataloader
     final_dim = (int(224 * res_scale), int(400 * res_scale))
     print('resolution:', final_dim)
-    
+
     data_aug_conf = {
         'final_dim': final_dim,
         'cams': ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
@@ -342,12 +355,95 @@ def main(
     )
     val_iterloader = iter(val_dataloader)
 
+    DATA_EXTRACTION= False
+
+    if DATA_EXTRACTION:
+
+        nusc = NuScenes(version='v1.0-trainval', dataroot='../nuscenes/trainval/v1.0-trainval', verbose=True)
+        batch_idx_list_top=[]
+        batch_idx_list_down=[]
+
+        iou_output_list=['/gallery_uffizi/dongwook.lee/simple_bev/IOU_output_top.txt',\
+            '/gallery_uffizi/dongwook.lee/simple_bev/IOU_output_down.txt']
+        # read txt file which is
+        for output_list in iou_output_list:
+            with open(output_list, 'r') as file:
+                for line in file:
+                    # Split each line into batch_num and idx
+                    batch_num, idx, _ = line.split(', ')
+                    batch_idx_list_top.append((int(batch_num), int(idx))) if output_list.split('_')[-1].split('.')[0]  == 'top' else None
+                    batch_idx_list_down.append((int(batch_num), int(idx))) if output_list.split('_')[-1].split('.')[0]  == 'down' else None
+
+        save_dir_image = 'saved_images_iou_'
+        save_dir_radar = 'saved_radars_iou_'
+
+        for pf in ['top', 'down']:
+            os.makedirs(save_dir_image+pf, exist_ok=False)
+            os.makedirs(save_dir_radar+pf, exist_ok=False)
+
+        batch_num = 0
+        IMAGE_VIEW = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT']
+        RADAR_VIEW =["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
+        try:
+            while True:
+                data = next(val_iterloader)
+
+                # radar part
+                for radar_name in RADAR_VIEW:
+                    for radar_idx, (tmporal, token_pt) in enumerate(data[16], data[-1][radar_name]):# data[16] = (32, 1, 19, 3500) / data[-1]= (32,1) 1=> {key, num_pt}
+                        for radar_view in tmporal: # tmporal = (1, 19, 3500)
+                            for sample_token, pt_num in token_pt:
+                                radar_pc =radar_view[:3,:pt_num]
+                                radar_image = nusc.render_pointcloud_in_image(sample_token,
+                                                        pointcloud=radar_pc,
+                                                        camera_channel='radar_name',  # Change to your camera channel
+                                                        show_lidarseg=False,
+                                                        render_intensity=False,
+                                                        show_dist=False)
+
+
+                # image part
+                for image_idx, temporal in enumerate(data[0]):  # data[0] = image data
+                    if (batch_num, image_idx) in batch_idx_list_top:  # Check if in iou txt file
+                        prefix = 'top'
+                    elif (batch_num, image_idx) in batch_idx_list_down:  # Check if in iou txt file
+                        prefix = 'down'
+                    else:
+                        continue
+                    images_to_save = []
+
+                    # Add images to the list in order
+                    for view_idx in range(6):  # Iterate over 6 views
+                        image_tensor = temporal[0][view_idx]
+                        images_to_save.append(image_tensor)
+
+                    # Swap the images in the top-left and center-top positions
+                    images_to_save[0], images_to_save[1] = images_to_save[1], images_to_save[0]
+                    images_to_save[3], images_to_save[5] = images_to_save[5], images_to_save[3]
+
+                    # Create an image grid with the modified list (2 rows, 3 columns)
+                    image_grid = make_grid(images_to_save, nrow=3)
+
+                    # 그리드를 PIL 이미지로 변환
+                    image_pil = Image.fromarray(image_grid.mul(255).permute(1, 2, 0).byte().numpy())
+
+                    # 합쳐진 이미지를 PNG 파일로 저장
+                    combined_filename = f'combined_image_batch{batch_num}_idx{image_idx}.png'
+                    image_pil.save(os.path.join(save_dir_image+prefix, combined_filename))
+
+                batch_num += 1  # update batch_num
+
+        except StopIteration:
+            # 모든 배치 처리가 끝났을 때
+            print('batch_num:', batch_num)
+            exit()
+
     vox_util = utils.vox.Vox_util(
         Z, Y, X,
         scene_centroid=scene_centroid.to(device),
         bounds=bounds,
         assert_cube=False)
-    
+
     max_iters = len(val_dataloader) # determine iters by length of dataset
 
     # set up model & seg loss
@@ -378,6 +474,12 @@ def main(
 
     intersection = 0
     union = 0
+
+    # make txt file for iou file
+    file_path = f'IOU_record_{use_radar}.txt'
+
+    num_batch = 0
+
     while global_step < max_iters:
         global_step += 1
 
@@ -392,22 +494,27 @@ def main(
             scalar_freq=int(log_freq/2),
             just_gif=True)
         sw_ev.save_this = False
-        
+
         try:
             sample = next(val_iterloader)
         except StopIteration:
             break
 
         read_time = time.time()-read_start_time
-            
+
         with torch.no_grad():
             total_loss, metrics = run_model(model, seg_loss_fn, sample, device, sw_ev)
+        num_batch += 1
+        # write the metrics of IOU
+        for i in range(len(metrics['intersection_batch'])):
+            with open(file_path, 'a') as f:
+                f.write(f'{num_batch}, {i}, {100*metrics["intersection_batch"][i]/metrics["union_batch"][i]}\n') # batch, idx pd batch, 100*intersection/union
 
         intersection += metrics['intersection']
         union += metrics['union']
 
         sw_ev.summ_scalar('pooled/iou_ev', intersection/union)
-        
+
         loss_pool_ev.update([total_loss.item()])
         sw_ev.summ_scalar('pooled/total_loss', loss_pool_ev.mean())
         sw_ev.summ_scalar('stats/total_loss', total_loss.item())
@@ -415,7 +522,7 @@ def main(
         ce_pool_ev.update([metrics['ce_loss']])
         sw_ev.summ_scalar('pooled/ce_loss', ce_pool_ev.mean())
         sw_ev.summ_scalar('stats/ce_loss', metrics['ce_loss'])
-        
+
         center_pool_ev.update([metrics['center_loss']])
         sw_ev.summ_scalar('pooled/center_loss', center_pool_ev.mean())
         sw_ev.summ_scalar('stats/center_loss', metrics['center_loss'])
@@ -425,7 +532,7 @@ def main(
         sw_ev.summ_scalar('stats/offset_loss', metrics['offset_loss'])
 
         iter_time = time.time()-iter_start_time
-        
+
         time_pool_ev.update([iter_time])
         sw_ev.summ_scalar('pooled/time_per_batch', time_pool_ev.mean())
         sw_ev.summ_scalar('pooled/time_per_el', time_pool_ev.mean()/float(B))
@@ -434,9 +541,9 @@ def main(
             model_name, global_step, max_iters, read_time, iter_time, 1000*time_pool_ev.mean(),
             total_loss.item(), 100*intersection/union))
     print('final %s mean iou' % dset, 100*intersection/union)
-    
+
     writer_ev.close()
-            
+
 
 if __name__ == '__main__':
     Fire(main)

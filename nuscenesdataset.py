@@ -73,9 +73,9 @@ class LidarPointCloud(PointCloud):
         :param file_name: Path of the pointcloud file on disk.
         :return: LidarPointCloud instance (x, y, z, intensity).
         """
-        
+
         assert file_name.endswith('.bin'), 'Unsupported filetype {}'.format(file_name)
-        
+
         scan = np.fromfile(file_name, dtype=np.float32)
         points = scan.reshape((-1, 5))[:, :cls.nbr_dims()]
         return cls(points.T)
@@ -131,7 +131,7 @@ def get_lidar_data(nusc, sample_rec, nsweeps, min_distance, dataroot):
 
         # print('time_lag', time_lag)
         # print('new_points', new_points.shape)
-        
+
         # Abort if there are no previous sweeps.
         if current_sd_rec['prev'] == '':
             break
@@ -147,7 +147,7 @@ def get_radar_data(nusc, sample_rec, nsweeps, min_distance, use_radar_filters, d
     Adapted from https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/utils/data_classes.py#L56
     """
     # import ipdb; ipdb.set_trace()
-    
+
     # points = np.zeros((5, 0))
     points = np.zeros((19, 0)) # 18 plus one for time
 
@@ -167,12 +167,19 @@ def get_radar_data(nusc, sample_rec, nsweeps, min_distance, use_radar_filters, d
         RadarPointCloud.disable_filters()
 
     # Aggregate current and previous sweeps.
-    # from all radars 
+    # from all radars
     radar_chan_list = ["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
+
+
+    radar_length_per_view={}
+    # make dict
+
+
     for radar_name in radar_chan_list:
         sample_data_token = sample_rec['data'][radar_name]
         current_sd_rec = nusc.get('sample_data', sample_data_token)
-        for _ in range(nsweeps):
+        radar_length_per_view[radar_name] ={}
+        for i in range(nsweeps):
             # Load up the pointcloud and remove points close to the sensor.
             current_pc = RadarPointCloud.from_file(os.path.join(dataroot, current_sd_rec['filename']))
             current_pc.remove_close(min_distance)
@@ -197,6 +204,14 @@ def get_radar_data(nusc, sample_rec, nsweeps, min_distance, use_radar_filters, d
 
             new_points = np.concatenate((current_pc.points, times), 0)
             points = np.concatenate((points, new_points), 1)
+            if i == 0:
+                sample_token = current_sd_rec['sample_token']
+                tmp_dict = {sample_token: new_points.shape[1]}
+            else:
+                tmp_dict[sample_token] = tmp_dict[sample_token] + new_points.shape[1]
+
+            radar_length_per_view[radar_name] = tmp_dict
+
 
             # print('time_lag', time_lag)
             # print('new_points', new_points.shape)
@@ -207,7 +222,11 @@ def get_radar_data(nusc, sample_rec, nsweeps, min_distance, use_radar_filters, d
             else:
                 current_sd_rec = nusc.get('sample_data', current_sd_rec['prev'])
 
-    return points
+
+            # print(f'{radar_name}_new_points shape', new_points.shape)
+
+
+    return points, radar_length_per_view
 
 
 def ego_to_cam(points, rot, trans, intrins=None):
@@ -373,7 +392,7 @@ def get_val_info(model, valloader, loss_fn, device, use_tqdm=False, max_iters=No
     print('running eval...')
 
     t0 = time()
-    
+
     loader = tqdm(valloader) if use_tqdm else valloader
 
     if max_iters is not None:
@@ -390,7 +409,7 @@ def get_val_info(model, valloader, loss_fn, device, use_tqdm=False, max_iters=No
                 allimgs, rots, trans, intrins, pts, binimgs = batch
             else:
                 allimgs, rots, trans, intrins, binimgs = batch
-                
+
             preds = model(allimgs.to(device), rots.to(device),
                           trans.to(device), intrins.to(device))
             binimgs = binimgs.to(device)
@@ -411,7 +430,7 @@ def get_val_info(model, valloader, loss_fn, device, use_tqdm=False, max_iters=No
         normalizer = counter
     else:
         normalizer = len(valloader.dataset)
-        
+
     return {
         'total_loss': total_loss / normalizer,
         'iou': total_intersect / total_union,
@@ -448,7 +467,7 @@ def add_ego2(bx, dx):
 def get_nusc_maps(map_folder):
     nusc_maps = {map_name: NuScenesMap(dataroot=map_folder,
                 map_name=map_name) for map_name in [
-                    "singapore-hollandvillage", 
+                    "singapore-hollandvillage",
                     "singapore-queenstown",
                     "boston-seaport",
                     "singapore-onenorth",
@@ -590,15 +609,15 @@ class NuscData(torch.utils.data.Dataset):
             self.dataroot = self.nusc.data_path
         else:
             self.dataroot = self.nusc.dataroot
-                    
 
-        
-        
+
+
+
         self.scenes = self.get_scenes()
-        
+
         # print('applying hack to use just first scene')
         # self.scenes = self.scenes[0:1]
-        
+
         self.ixes = self.prepro()
         if temporal_aug:
             self.indices = self.get_indices_tempaug()
@@ -622,12 +641,12 @@ class NuscData(torch.utils.data.Dataset):
         self.dx, self.bx, self.nx = dx.numpy(), bx.numpy(), nx.numpy()
 
         print(self)
-    
+
     def get_scenes(self):
 
         if self.is_lyft:
             scenes = [row['name'] for row in self.nusc.scene]
-            
+
             # Split in train/val
             indices = TRAIN_LYFT_INDICES if self.is_train else VAL_LYFT_INDICES
             scenes = [scenes[i] for i in indices]
@@ -647,7 +666,7 @@ class NuscData(torch.utils.data.Dataset):
         # sort by scene, timestamp (only to make chronological viz easier)
         samples.sort(key=lambda x: (x['scene_token'], x['timestamp']))
         return samples
-    
+
     def get_indices(self):
         indices = []
         for index in range(len(self.ixes)):
@@ -711,7 +730,7 @@ class NuscData(torch.utils.data.Dataset):
                     if (previous_rec is not None) and (rec['scene_token'] != previous_rec['scene_token']):
                         is_valid_data = False
                         break
-                    
+
                     current_indices.append(index_t)
                     previous_rec = rec
 
@@ -721,7 +740,7 @@ class NuscData(torch.utils.data.Dataset):
                     # indices += list(itertools.permutations(current_indices))
 
         return np.asarray(indices)
-    
+
     def sample_augmentation(self):
         fH, fW = self.data_aug_conf['final_dim']
         if self.is_train:
@@ -790,7 +809,7 @@ class NuscData(torch.utils.data.Dataset):
             rots.append(rot)
             trans.append(tran)
 
-            
+
         return (torch.stack(imgs), torch.stack(rots), torch.stack(trans),torch.stack(intrins))
 
 
@@ -805,8 +824,8 @@ class NuscData(torch.utils.data.Dataset):
         if self.is_lyft:
             pts = np.zeros((3,100))
         else:
-            pts = get_radar_data(self.nusc, rec, nsweeps=nsweeps, min_distance=2.2, use_radar_filters=self.use_radar_filters, dataroot=self.dataroot)
-        return torch.Tensor(pts)
+            pts, radar_per_view = get_radar_data(self.nusc, rec, nsweeps=nsweeps, min_distance=2.2, use_radar_filters=self.use_radar_filters, dataroot=self.dataroot)
+        return torch.Tensor(pts), radar_per_view
 
     def get_binimg(self, rec):
         egopose = self.nusc.get('ego_pose', self.nusc.get('sample_data', rec['data']['LIDAR_TOP'])['ego_pose_token'])
@@ -815,7 +834,7 @@ class NuscData(torch.utils.data.Dataset):
         img = np.zeros((self.nx[0], self.nx[1]))
         for ii, tok in enumerate(rec['anns']):
             inst = self.nusc.get('sample_annotation', tok)
-            
+
             if not self.is_lyft:
                 # NuScenes filter
                 if 'vehicle' not in inst['category_name']:
@@ -827,7 +846,7 @@ class NuscData(torch.utils.data.Dataset):
                 # Lyft filter
                 if inst['category_name'] not in ['bus', 'car', 'construction_vehicle', 'trailer', 'truck']:
                     continue
-                
+
             box = Box(inst['translation'], inst['size'], Quaternion(inst['rotation']))
             box.translate(trans)
             box.rotate(rot)
@@ -863,10 +882,10 @@ class NuscData(torch.utils.data.Dataset):
             # if this messes in some later conditions,
             # the solution is to draw all combos
             pts = np.stack([pts[0],pts[1],pts[3],pts[2]])
-            
+
             # pts[:, [1, 0]] = pts[:, [0, 1]]
             cv2.fillPoly(seg, [pts], n+1.0)
-            
+
             if vislist[n]==0:
                 # draw a black rectangle if it's invisible
                 cv2.fillPoly(val, [pts], 0.0)
@@ -884,7 +903,7 @@ class NuscData(torch.utils.data.Dataset):
         rlist_, tlist_ = utils.geom.split_rt(rtlist.reshape(B*N, 4, 4))
 
         x_vec = torch.zeros((B*N, 3), dtype=torch.float32, device=rlist_.device)
-        x_vec[:, 0] = 1 # 0,0,1 
+        x_vec[:, 0] = 1 # 0,0,1
         x_rot = torch.matmul(rlist_, x_vec.unsqueeze(2)).squeeze(2)
 
         rylist = torch.atan2(x_rot[:, 0], x_rot[:, 2]).reshape(N)
@@ -909,7 +928,7 @@ class NuscData(torch.utils.data.Dataset):
             inst = (seg_bev==(n+1)).float() # 1, Z, X
             inst = inst.reshape(self.Z, self.X) > 0.01
             ry_bev[0,:,inst] = rylist[n]
-            
+
         ycoord_bev = torch.zeros((1, 1, self.Z, self.X), dtype=torch.float32)
         for n in range(N):
             inst = (seg_bev==(n+1)).float() # 1, Z, X
@@ -922,10 +941,10 @@ class NuscData(torch.utils.data.Dataset):
         min_offset = torch.min(offset, dim=3)[0] # B,2,Z,X
         max_offset = torch.max(offset, dim=3)[0] # B,2,Z,X
         offset = min_offset + max_offset
-        
+
         center = torch.max(center, dim=1, keepdim=True)[0] # B,1,Z,Y,X
         center = torch.max(center, dim=3)[0] # max along Y; 1,Z,X
-        
+
         return center.squeeze(0), offset.squeeze(0), size_bev.squeeze(0), ry_bev.squeeze(0), ycoord_bev.squeeze(0) # 1,Z,X; 2,Z,X; 3,Z,X; 1,Z,X
 
     def get_lrtlist(self, rec):
@@ -951,7 +970,7 @@ class NuscData(torch.utils.data.Dataset):
                 if inst['category_name'] not in ['bus', 'car', 'construction_vehicle', 'trailer', 'truck']:
                     continue
                 vislist.append(torch.tensor(1.0)) # visible
-                
+
             box = Box(inst['translation'], inst['size'], Quaternion(inst['rotation']))
             box.translate(trans)
             box.rotate(rot)
@@ -1022,7 +1041,7 @@ class VizData(NuscData):
         imgs, rots, trans, intrins = self.get_image_data(rec, cams)
         lidar_data = self.get_lidar_data(rec, nsweeps=self.nsweeps)
         binimg, egopose = self.get_binimg(rec)
-        
+
         if refcam_id is None:
             if self.is_train:
                 # randomly sample the ref cam
@@ -1040,7 +1059,7 @@ class VizData(NuscData):
         rot_0 = rots[0].clone()
         rots[0] = rot_ref
         rots[refcam_id] = rot_0
-        
+
         tran_ref = trans[refcam_id].clone()
         tran_0 = trans[0].clone()
         trans[0] = tran_ref
@@ -1050,8 +1069,8 @@ class VizData(NuscData):
         intrin_0 = intrins[0].clone()
         intrins[0] = intrin_ref
         intrins[refcam_id] = intrin_0
-        
-        radar_data = self.get_radar_data(rec, nsweeps=self.nsweeps)
+
+        radar_data, self.radar_per_view = self.get_radar_data(rec, nsweeps=self.nsweeps)
 
         lidar_extra = lidar_data[3:]
         lidar_data = lidar_data[:3]
@@ -1061,7 +1080,7 @@ class VizData(NuscData):
 
         # import ipdb; ipdb.set_trace()
         if N_ > 0:
-            
+
             velo_T_cam = utils.geom.merge_rt(rots, trans)
             cam_T_velo = utils.geom.safe_inverse(velo_T_cam)
 
@@ -1069,7 +1088,7 @@ class VizData(NuscData):
             lrtlist_cam = utils.geom.apply_4x4_to_lrt(cam_T_velo[0:1].repeat(N_, 1, 1), lrtlist_).unsqueeze(0)
 
             seg_bev, valid_bev = self.get_seg_bev(lrtlist_cam, vislist_)
-            
+
             center_bev, offset_bev, size_bev, ry_bev, ycoord_bev = self.get_center_and_offset_bev(lrtlist_cam, seg_bev)
         else:
             seg_bev = torch.zeros((1, self.Z, self.X), dtype=torch.float32)
@@ -1088,7 +1107,7 @@ class VizData(NuscData):
         vislist[:N_] = vislist_
         scorelist[:N_] = 1
 
-        # lidar is shaped 3,V, where V~=26k 
+        # lidar is shaped 3,V, where V~=26k
         times = lidar_extra[2] # V
         inds = times==times[0]
         lidar0_data = lidar_data[:,inds]
@@ -1102,7 +1121,7 @@ class VizData(NuscData):
             V = 70000*self.nsweeps
         else:
             V = 30000*self.nsweeps
-            
+
         if lidar_data.shape[0] > V:
             # assert(False) # if this happens, it's probably better to increase V than to subsample as below
             lidar0_data = lidar0_data[:V//self.nsweeps]
@@ -1119,7 +1138,7 @@ class VizData(NuscData):
         lidar_data = np.transpose(lidar_data)
         lidar_extra = np.transpose(lidar_extra)
 
-        # radar has <700 points 
+        # radar has <700 points
         radar_data = np.transpose(radar_data)
         V = 700*self.nsweeps
         if radar_data.shape[0] > V:
@@ -1141,20 +1160,23 @@ class VizData(NuscData):
         seg_bev = (seg_bev > 0).float()
 
         if self.get_tids:
-            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist_, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose
+            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist_, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose, self.radar_per_view
         else:
-            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose
-    
+            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose, self.radar_per_view
+
     def __getitem__(self, index):
 
         cams = self.choose_cams()
-        
+
         if self.is_train and self.do_shuffle_cams:
             # randomly sample the ref cam
             refcam_id = np.random.randint(1, len(cams))
         else:
             refcam_id = self.refcam_id
-        
+
+        view_keys = ["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
+
+        all_radar_per_views = {view: [] for view in view_keys}  # Initialize with your view keys
         all_imgs = []
         all_rots = []
         all_trans = []
@@ -1173,9 +1195,12 @@ class VizData(NuscData):
         all_offset_bev = []
         all_radar_data = []
         all_egopose = []
-        for index_t in self.indices[index]:
+
+
+        for i, index_t in enumerate(self.indices[index]):
             # print('grabbing index %d' % index_t)
-            imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose = self.get_single_item(index_t, cams, refcam_id=refcam_id)
+            imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose, radar_per_view = self.get_single_item(index_t, cams, refcam_id=refcam_id)
+            # print('radar_per_view: ',radar_per_view)
 
             all_imgs.append(imgs)
             all_rots.append(rots)
@@ -1195,6 +1220,8 @@ class VizData(NuscData):
             all_offset_bev.append(offset_bev)
             all_radar_data.append(radar_data)
             all_egopose.append(egopose)
+            for view in view_keys:
+                all_radar_per_views[view].append(radar_per_view[view])
 
         all_imgs = torch.stack(all_imgs)
         all_rots = torch.stack(all_rots)
@@ -1214,7 +1241,10 @@ class VizData(NuscData):
         all_offset_bev = torch.stack(all_offset_bev)
         all_radar_data = torch.stack(all_radar_data)
         all_egopose = torch.stack(all_egopose)
-        
+
+        # for view in view_keys:
+        #     all_radar_per_views[view] = np.concatenate(all_radar_per_views[view], axis=0)
+
         usable_tidlist = -1*torch.ones_like(all_scorelist).long()
         counter = 0
         for t in range(len(all_tidlist)):
@@ -1231,8 +1261,28 @@ class VizData(NuscData):
                         counter += 1
         all_tidlist = usable_tidlist
 
-        return all_imgs, all_rots, all_trans, all_intrins, all_lidar0_data, all_lidar0_extra, all_lidar_data, all_lidar_extra, all_lrtlist, all_vislist, all_tidlist, all_scorelist, all_seg_bev, all_valid_bev, all_center_bev, all_offset_bev, all_radar_data, all_egopose
+        return all_imgs, all_rots, all_trans, all_intrins, all_lidar0_data, all_lidar0_extra, all_lidar_data, all_lidar_extra, all_lrtlist, all_vislist, all_tidlist, all_scorelist, all_seg_bev, all_valid_bev, all_center_bev, all_offset_bev, all_radar_data, all_egopose, all_radar_per_views
 
+def custom_collate_fn(batch):
+
+    # 'all_radar_per_views'를 배치에서 제거하고 임시 저장
+    radar_per_views = [d[-1] for d in batch]
+    for i in range(len(batch)):
+        batch[i] = batch[i][:-1]
+
+    # 나머지 데이터에 대해 기본 collate 함수 사용
+    default_collated = torch.utils.data._utils.collate.default_collate(batch)
+
+    # 'all_radar_per_views'에 대한 사용자 정의 처리 수행
+    all_radar_per_views_collated = {}
+    for key in radar_per_views[0].keys():
+        all_radar_per_views_collated[key] = [rv[key] for rv in radar_per_views]
+        # 필요하다면 여기서 추가 처리를 할 수 있습니다
+
+    # 기본 collate로 처리된 데이터에 'all_radar_per_views' 추가
+    default_collated.append(all_radar_per_views_collated)
+
+    return default_collated
 
 def worker_rnd_init(x):
     np.random.seed(13 + x)
@@ -1289,6 +1339,7 @@ def compile_data(version, dataroot, data_aug_conf, centroid, bounds, res_3d, bsz
         shuffle=shuffle,
         num_workers=nworkers,
         drop_last=True,
+        collate_fn=custom_collate_fn,
         worker_init_fn=worker_rnd_init,
         pin_memory=False)
     valloader = torch.utils.data.DataLoader(
@@ -1297,6 +1348,7 @@ def compile_data(version, dataroot, data_aug_conf, centroid, bounds, res_3d, bsz
         shuffle=shuffle,
         num_workers=nworkers_val,
         drop_last=True,
+        collate_fn=custom_collate_fn,
         pin_memory=False)
     print('data ready')
     return trainloader, valloader
