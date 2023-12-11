@@ -169,17 +169,10 @@ def get_radar_data(nusc, sample_rec, nsweeps, min_distance, use_radar_filters, d
     # Aggregate current and previous sweeps.
     # from all radars
     radar_chan_list = ["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
-
-
-    radar_length_per_view={}
-    # make dict
-
-
     for radar_name in radar_chan_list:
         sample_data_token = sample_rec['data'][radar_name]
         current_sd_rec = nusc.get('sample_data', sample_data_token)
-        radar_length_per_view[radar_name] ={}
-        for i in range(nsweeps):
+        for _ in range(nsweeps):
             # Load up the pointcloud and remove points close to the sensor.
             current_pc = RadarPointCloud.from_file(os.path.join(dataroot, current_sd_rec['filename']))
             current_pc.remove_close(min_distance)
@@ -204,14 +197,6 @@ def get_radar_data(nusc, sample_rec, nsweeps, min_distance, use_radar_filters, d
 
             new_points = np.concatenate((current_pc.points, times), 0)
             points = np.concatenate((points, new_points), 1)
-            if i == 0:
-                sample_token = current_sd_rec['sample_token']
-                tmp_dict = {sample_token: new_points.shape[1]}
-            else:
-                tmp_dict[sample_token] = tmp_dict[sample_token] + new_points.shape[1]
-
-            radar_length_per_view[radar_name] = tmp_dict
-
 
             # print('time_lag', time_lag)
             # print('new_points', new_points.shape)
@@ -222,11 +207,7 @@ def get_radar_data(nusc, sample_rec, nsweeps, min_distance, use_radar_filters, d
             else:
                 current_sd_rec = nusc.get('sample_data', current_sd_rec['prev'])
 
-
-            # print(f'{radar_name}_new_points shape', new_points.shape)
-
-
-    return points, radar_length_per_view
+    return points
 
 
 def ego_to_cam(points, rot, trans, intrins=None):
@@ -824,8 +805,8 @@ class NuscData(torch.utils.data.Dataset):
         if self.is_lyft:
             pts = np.zeros((3,100))
         else:
-            pts, radar_per_view = get_radar_data(self.nusc, rec, nsweeps=nsweeps, min_distance=2.2, use_radar_filters=self.use_radar_filters, dataroot=self.dataroot)
-        return torch.Tensor(pts), radar_per_view
+            pts = get_radar_data(self.nusc, rec, nsweeps=nsweeps, min_distance=2.2, use_radar_filters=self.use_radar_filters, dataroot=self.dataroot)
+        return torch.Tensor(pts)
 
     def get_binimg(self, rec):
         egopose = self.nusc.get('ego_pose', self.nusc.get('sample_data', rec['data']['LIDAR_TOP'])['ego_pose_token'])
@@ -1070,7 +1051,7 @@ class VizData(NuscData):
         intrins[0] = intrin_ref
         intrins[refcam_id] = intrin_0
 
-        radar_data, self.radar_per_view = self.get_radar_data(rec, nsweeps=self.nsweeps)
+        radar_data = self.get_radar_data(rec, nsweeps=self.nsweeps)
 
         lidar_extra = lidar_data[3:]
         lidar_data = lidar_data[:3]
@@ -1160,9 +1141,9 @@ class VizData(NuscData):
         seg_bev = (seg_bev > 0).float()
 
         if self.get_tids:
-            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist_, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose, self.radar_per_view
+            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist_, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose
         else:
-            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose, self.radar_per_view
+            return imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose
 
     def __getitem__(self, index):
 
@@ -1174,9 +1155,6 @@ class VizData(NuscData):
         else:
             refcam_id = self.refcam_id
 
-        view_keys = ["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
-
-        all_radar_per_views = {view: [] for view in view_keys}  # Initialize with your view keys
         all_imgs = []
         all_rots = []
         all_trans = []
@@ -1195,12 +1173,9 @@ class VizData(NuscData):
         all_offset_bev = []
         all_radar_data = []
         all_egopose = []
-
-
-        for i, index_t in enumerate(self.indices[index]):
+        for index_t in self.indices[index]:
             # print('grabbing index %d' % index_t)
-            imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose, radar_per_view = self.get_single_item(index_t, cams, refcam_id=refcam_id)
-            # print('radar_per_view: ',radar_per_view)
+            imgs, rots, trans, intrins, lidar0_data, lidar0_extra, lidar_data, lidar_extra, lrtlist, vislist, tidlist, scorelist, seg_bev, valid_bev, center_bev, offset_bev, size_bev, ry_bev, ycoord_bev, radar_data, egopose = self.get_single_item(index_t, cams, refcam_id=refcam_id)
 
             all_imgs.append(imgs)
             all_rots.append(rots)
@@ -1220,8 +1195,6 @@ class VizData(NuscData):
             all_offset_bev.append(offset_bev)
             all_radar_data.append(radar_data)
             all_egopose.append(egopose)
-            for view in view_keys:
-                all_radar_per_views[view].append(radar_per_view[view])
 
         all_imgs = torch.stack(all_imgs)
         all_rots = torch.stack(all_rots)
@@ -1242,9 +1215,6 @@ class VizData(NuscData):
         all_radar_data = torch.stack(all_radar_data)
         all_egopose = torch.stack(all_egopose)
 
-        # for view in view_keys:
-        #     all_radar_per_views[view] = np.concatenate(all_radar_per_views[view], axis=0)
-
         usable_tidlist = -1*torch.ones_like(all_scorelist).long()
         counter = 0
         for t in range(len(all_tidlist)):
@@ -1261,28 +1231,8 @@ class VizData(NuscData):
                         counter += 1
         all_tidlist = usable_tidlist
 
-        return all_imgs, all_rots, all_trans, all_intrins, all_lidar0_data, all_lidar0_extra, all_lidar_data, all_lidar_extra, all_lrtlist, all_vislist, all_tidlist, all_scorelist, all_seg_bev, all_valid_bev, all_center_bev, all_offset_bev, all_radar_data, all_egopose, all_radar_per_views
+        return all_imgs, all_rots, all_trans, all_intrins, all_lidar0_data, all_lidar0_extra, all_lidar_data, all_lidar_extra, all_lrtlist, all_vislist, all_tidlist, all_scorelist, all_seg_bev, all_valid_bev, all_center_bev, all_offset_bev, all_radar_data, all_egopose
 
-def custom_collate_fn(batch):
-
-    # 'all_radar_per_views'를 배치에서 제거하고 임시 저장
-    radar_per_views = [d[-1] for d in batch]
-    for i in range(len(batch)):
-        batch[i] = batch[i][:-1]
-
-    # 나머지 데이터에 대해 기본 collate 함수 사용
-    default_collated = torch.utils.data._utils.collate.default_collate(batch)
-
-    # 'all_radar_per_views'에 대한 사용자 정의 처리 수행
-    all_radar_per_views_collated = {}
-    for key in radar_per_views[0].keys():
-        all_radar_per_views_collated[key] = [rv[key] for rv in radar_per_views]
-        # 필요하다면 여기서 추가 처리를 할 수 있습니다
-
-    # 기본 collate로 처리된 데이터에 'all_radar_per_views' 추가
-    default_collated.append(all_radar_per_views_collated)
-
-    return default_collated
 
 def worker_rnd_init(x):
     np.random.seed(13 + x)
@@ -1339,7 +1289,6 @@ def compile_data(version, dataroot, data_aug_conf, centroid, bounds, res_3d, bsz
         shuffle=shuffle,
         num_workers=nworkers,
         drop_last=True,
-        collate_fn=custom_collate_fn,
         worker_init_fn=worker_rnd_init,
         pin_memory=False)
     valloader = torch.utils.data.DataLoader(
@@ -1348,7 +1297,6 @@ def compile_data(version, dataroot, data_aug_conf, centroid, bounds, res_3d, bsz
         shuffle=shuffle,
         num_workers=nworkers_val,
         drop_last=True,
-        collate_fn=custom_collate_fn,
         pin_memory=False)
     print('data ready')
     return trainloader, valloader

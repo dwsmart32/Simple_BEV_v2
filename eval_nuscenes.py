@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import os
 import time
 import argparse
@@ -14,15 +13,13 @@ import nuscenesdataset
 import torch
 torch.multiprocessing.set_sharing_strategy('file_system')
 import torch.nn as nn
-from nuscenes.nuscenes import NuScenes
-from nuscenes.utils.data_classes import RadarPointCloud
-from nuscenes.utils.geometry_utils import view_points, box_in_image, BoxVisibility, transform_matrix
-from nuscenes.nuscenes import NuScenes
-from PIL import Image
-from torchvision.utils import make_grid
 from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 import torch.nn.functional as F
+from nuscenes.nuscenes import NuScenes
+from nuscenes.utils.splits import create_splits_scenes
+from PIL import Image
+import matplotlib.pyplot as plt
 
 random.seed(125)
 np.random.seed(125)
@@ -117,8 +114,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     metrics = {}
     total_loss = torch.tensor(0.0, requires_grad=True).to(device)
 
-    imgs, rots, trans, intrins, pts0, extra0, pts, extra, lrtlist_velo, vislist, tidlist, scorelist, seg_bev_g, valid_bev_g, center_bev_g, offset_bev_g, radar_data, egopose, radar_per_view = d
-    import ipdb; ipdb.set_trace()
+    imgs, rots, trans, intrins, pts0, extra0, pts, extra, lrtlist_velo, vislist, tidlist, scorelist, seg_bev_g, valid_bev_g, center_bev_g, offset_bev_g, radar_data, egopose = d
 
     B0,T,S,C,H,W = imgs.shape
     assert(T==1)
@@ -250,15 +246,16 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum()
-    intersection_batch = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=(1,2,3))
     union = ((seg_bev_e_round+seg_bev_g)*valid_bev_g).clamp(0,1).sum()
-    union_batch = ((seg_bev_e_round+seg_bev_g)*valid_bev_g).clamp(0,1).sum(dim=(1,2,3))
-
+    # iou_list = []
+    # for b in range(seg_bev_e_round.size(0)):
+    #     intersection_ = (seg_bev_e_round*seg_bev_g*valid_bev_g)[b].sum()
+    #     union_ = ((seg_bev_e_round+seg_bev_g)*valid_bev_g).clamp(0,1)[b].sum()
+    #     iou = 100 * intersection_ / union_
+    #     iou_list.append(iou.item())
 
     metrics['intersection'] = intersection.item()
-    metrics['intersection_batch'] = intersection_batch.cpu()
     metrics['union'] = union.item()
-    metrics['union_batch'] = union_batch.cpu()
     metrics['ce_loss'] = ce_loss.item()
     metrics['center_loss'] = center_loss.item()
     metrics['offset_loss'] = offset_loss.item()
@@ -353,90 +350,8 @@ def main(
         do_shuffle_cams=False,
         get_tids=True,
     )
+
     val_iterloader = iter(val_dataloader)
-
-    DATA_EXTRACTION= False
-
-    if DATA_EXTRACTION:
-
-        nusc = NuScenes(version='v1.0-trainval', dataroot='../nuscenes/trainval/v1.0-trainval', verbose=True)
-        batch_idx_list_top=[]
-        batch_idx_list_down=[]
-
-        iou_output_list=['/gallery_uffizi/dongwook.lee/simple_bev/IOU_output_top.txt',\
-            '/gallery_uffizi/dongwook.lee/simple_bev/IOU_output_down.txt']
-        # read txt file which is
-        for output_list in iou_output_list:
-            with open(output_list, 'r') as file:
-                for line in file:
-                    # Split each line into batch_num and idx
-                    batch_num, idx, _ = line.split(', ')
-                    batch_idx_list_top.append((int(batch_num), int(idx))) if output_list.split('_')[-1].split('.')[0]  == 'top' else None
-                    batch_idx_list_down.append((int(batch_num), int(idx))) if output_list.split('_')[-1].split('.')[0]  == 'down' else None
-
-        save_dir_image = 'saved_images_iou_'
-        save_dir_radar = 'saved_radars_iou_'
-
-        for pf in ['top', 'down']:
-            os.makedirs(save_dir_image+pf, exist_ok=False)
-            os.makedirs(save_dir_radar+pf, exist_ok=False)
-
-        batch_num = 0
-        IMAGE_VIEW = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT']
-        RADAR_VIEW =["RADAR_BACK_RIGHT", "RADAR_BACK_LEFT", "RADAR_FRONT", "RADAR_FRONT_LEFT", "RADAR_FRONT_RIGHT"]
-        try:
-            while True:
-                data = next(val_iterloader)
-
-                # radar part
-                for radar_name in RADAR_VIEW:
-                    for radar_idx, (tmporal, token_pt) in enumerate(data[16], data[-1][radar_name]):# data[16] = (32, 1, 19, 3500) / data[-1]= (32,1) 1=> {key, num_pt}
-                        for radar_view in tmporal: # tmporal = (1, 19, 3500)
-                            for sample_token, pt_num in token_pt:
-                                radar_pc =radar_view[:3,:pt_num]
-                                radar_image = nusc.render_pointcloud_in_image(sample_token,
-                                                        pointcloud=radar_pc,
-                                                        camera_channel='radar_name',  # Change to your camera channel
-                                                        show_lidarseg=False,
-                                                        render_intensity=False,
-                                                        show_dist=False)
-
-
-                # image part
-                for image_idx, temporal in enumerate(data[0]):  # data[0] = image data
-                    if (batch_num, image_idx) in batch_idx_list_top:  # Check if in iou txt file
-                        prefix = 'top'
-                    elif (batch_num, image_idx) in batch_idx_list_down:  # Check if in iou txt file
-                        prefix = 'down'
-                    else:
-                        continue
-                    images_to_save = []
-
-                    # Add images to the list in order
-                    for view_idx in range(6):  # Iterate over 6 views
-                        image_tensor = temporal[0][view_idx]
-                        images_to_save.append(image_tensor)
-
-                    # Swap the images in the top-left and center-top positions
-                    images_to_save[0], images_to_save[1] = images_to_save[1], images_to_save[0]
-                    images_to_save[3], images_to_save[5] = images_to_save[5], images_to_save[3]
-
-                    # Create an image grid with the modified list (2 rows, 3 columns)
-                    image_grid = make_grid(images_to_save, nrow=3)
-
-                    # 그리드를 PIL 이미지로 변환
-                    image_pil = Image.fromarray(image_grid.mul(255).permute(1, 2, 0).byte().numpy())
-
-                    # 합쳐진 이미지를 PNG 파일로 저장
-                    combined_filename = f'combined_image_batch{batch_num}_idx{image_idx}.png'
-                    image_pil.save(os.path.join(save_dir_image+prefix, combined_filename))
-
-                batch_num += 1  # update batch_num
-
-        except StopIteration:
-            # 모든 배치 처리가 끝났을 때
-            print('batch_num:', batch_num)
-            exit()
 
     vox_util = utils.vox.Vox_util(
         Z, Y, X,
@@ -445,6 +360,7 @@ def main(
         assert_cube=False)
 
     max_iters = len(val_dataloader) # determine iters by length of dataset
+
 
     # set up model & seg loss
     seg_loss_fn = SimpleLoss(2.13).to(device)
@@ -474,10 +390,6 @@ def main(
 
     intersection = 0
     union = 0
-
-    # make txt file for iou file
-    file_path = f'IOU_record_{use_radar}.txt'
-
     num_batch = 0
 
     while global_step < max_iters:
@@ -504,11 +416,17 @@ def main(
 
         with torch.no_grad():
             total_loss, metrics = run_model(model, seg_loss_fn, sample, device, sw_ev)
+
         num_batch += 1
-        # write the metrics of IOU
-        for i in range(len(metrics['intersection_batch'])):
-            with open(file_path, 'a') as f:
-                f.write(f'{num_batch}, {i}, {100*metrics["intersection_batch"][i]/metrics["union_batch"][i]}\n') # batch, idx pd batch, 100*intersection/union
+
+        make_iou_output = False
+        # write the metrics of IOU #
+        if make_iou_output:
+            file_path = f'IOU_record_{use_radar}.txt'
+            for i in range(len(metrics['intersection_batch'])):
+                with open(file_path, 'a') as f:
+                    f.write(f'{num_batch}, {i}, {100*metrics["intersection_batch"][i]/metrics["union_batch"][i]}\n') # batch, idx pd batch, 100*intersection/union
+
 
         intersection += metrics['intersection']
         union += metrics['union']
@@ -541,10 +459,126 @@ def main(
             model_name, global_step, max_iters, read_time, iter_time, 1000*time_pool_ev.mean(),
             total_loss.item(), 100*intersection/union))
     print('final %s mean iou' % dset, 100*intersection/union)
+    
+    
+    # read the metrics of IOU #
+    iou_list_top, iou_list_down = [], []
+    prefixes = ['top', 'down']
+    for prefix in prefixes:
+        with open(f'IOU_output_{prefix}.txt', 'r') as f:
+            for line in f:
+                batch_num, idx = map(int, line.split(',')[:-1])
+                iou_list_top.append(batch_num * batch_size + idx) \
+                    if prefix == 'top' else iou_list_down.append(batch_num * batch_size + idx)
+
+    # iou_per_image.extend(iou_list)
+    # print(len(iou_per_image))
+    # top_5_indices = [index for index, value in sorted(list(enumerate(iou_per_image)), key=lambda x: x[1], reverse=True)[:5]]
+    # print(top_5_indices)
+    
+    nusc = NuScenes(version='v1.0-{}'.format(dset),dataroot=os.path.join(data_dir, dset),verbose=False)
+    split = {'v1.0-trainval': {True: 'train', False: 'val'},'v1.0-mini': {True: 'mini_train', False: 'mini_val'},
+            }[nusc.version][False]
+    scenes = create_splits_scenes()[split]
+
+    for prefix in prefixes:
+        for data_type in ['CAM', 'BEV', 'RADAR', 'LIDAR']:
+            output_directory = f'../nuscenes/{prefix}/{data_type}'
+            os.makedirs(output_directory, exist_ok=True)
+
+    all_samples = []
+    for name in scenes:
+        target_scene = None
+        for scene in nusc.scene:
+            if scene['name'] == name:
+                target_scene = scene
+                break
+        if target_scene is not None:
+            sample_tokens = target_scene['first_sample_token']
+
+            while sample_tokens:
+                sample = nusc.get('sample', sample_tokens)
+                all_samples.append(sample)
+                sample_tokens = sample['next']
+        else:
+            print(f"No scene found with the name '{name}'.")
+
+
+    CAMERA_SENSOR = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
+    RADAR_SENSOR = ['RADAR_FRONT_LEFT', 'RADAR_FRONT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT',  'RADAR_BACK_RIGHT']
+    view_dictionary = dict(zip(RADAR_SENSOR, CAMERA_SENSOR))
+    CAMERA_SENSOR.insert(4, 'CAM_BACK')
+    
+    for i, iou_list in enumerate([iou_list_top, iou_list_down]):
+        for index in iou_list:
+            if index < len(all_samples):
+                sample_info = all_samples[index]
+                cam_images = {}
+                radar_images = {}
+
+                for sensor_name, sensor_data in sample_info['data'].items():
+                    sample_data = nusc.get('sample_data', sensor_data)
+                    out_path_base = f'../nuscenes/{prefixes[i]}'
+
+                    if 'CAM' in sensor_name:
+                        cam_images[sensor_name] = nusc.render_sample_data(sample_data['token'])
+
+                    else:
+                        nusc.render_sample_data(sample_data['token'], out_path= f'../nuscenes/{prefixes[i]}/BEV//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
+                    
+                    if 'RADAR' in sensor_name:
+                        radar_images[sensor_name] = nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, camera_channel=view_dictionary[sensor_name])
+                        
+                    if 'LIDAR' in sensor_name:
+                        nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, out_path= f'../nuscenes/{prefixes[i]}/LIDAR//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
+                
+                radar_images['RADAR_BACK'] = cam_images['CAM_BACK']
+
+                create_grid(cam_images, 2, 3, os.path.join(out_path_base, f'CAM/batch_{index//batch_size}_idx_{index%batch_size}.jpg'))
+
+                create_grid(radar_images, 2, 3, os.path.join(out_path_base, f'RADAR/batch_{index//batch_size}_idx_{index%batch_size}.jpg'), crop_for_radar=True)
+            else:
+                print(f"Index {index} is out of range.")
 
     writer_ev.close()
+    
+    
+def create_grid(images, rows, cols, out_path, crop_for_radar=False):
+
+    order_pattern = ['FRONT_LEFT', 'FRONT', 'FRONT_RIGHT','BACK_RIGHT' , 'BACK', 'BACK_LEFT']
+    ordered_keys = [key for pattern in order_pattern for key in images.keys() if key.endswith(pattern)]
+
+    # 첫 번째 이미지의 크기로 그리드 이미지 크기 계산
+    first_image = images[ordered_keys[0]]
+    height, width, _ = first_image.shape # 697, 412 for cam and 697, 392 for radar
+
+    # 새로운 이미지 생성
+    grid_img = Image.new('RGB', (cols * width, rows * height))
+
+    for idx, key in enumerate(ordered_keys):
+        # Determine the position of the current image
+        grid_row = idx // cols
+        grid_col = idx % cols
+
+        # Convert the numpy array to a PIL Image and convert to RGB
+        image = Image.fromarray(images[key]).convert('RGB')
+        
+        if crop_for_radar == True and image.size == (697, 412):
+            image = image.crop((0, 0, 697, 392))  # Cropping
+            
+        # Calculate the box for pasting
+        left = grid_col * width
+        upper = grid_row * height
+        right = left + width  # Corrected here
+        lower = upper + height  # Corrected here
+        box = (left, upper, right, lower)  # Corrected box
+
+        # Paste the image
+        grid_img.paste(image, box)
+
+    # Save the grid image
+    grid_img.save(out_path)
 
 
 if __name__ == '__main__':
     Fire(main)
-
