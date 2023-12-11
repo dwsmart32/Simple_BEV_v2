@@ -305,6 +305,8 @@ def main(
         do_rgbcompress=True,
         # cuda
         device_ids=[4,5,6,7],
+        make_iou_output = False,
+        save_images_for_analysis = False
 ):
     B = batch_size
     assert(B % len(device_ids) == 0) # batch size must be divisible by number of gpus
@@ -419,14 +421,12 @@ def main(
 
         num_batch += 1
 
-        make_iou_output = False
         # write the metrics of IOU #
         if make_iou_output:
             file_path = f'IOU_record_{use_radar}.txt'
             for i in range(len(metrics['intersection_batch'])):
                 with open(file_path, 'a') as f:
                     f.write(f'{num_batch}, {i}, {100*metrics["intersection_batch"][i]/metrics["union_batch"][i]}\n') # batch, idx pd batch, 100*intersection/union
-
 
         intersection += metrics['intersection']
         union += metrics['union']
@@ -461,84 +461,79 @@ def main(
     print('final %s mean iou' % dset, 100*intersection/union)
     
     
-    # read the metrics of IOU #
-    iou_list_top, iou_list_down = [], []
-    prefixes = ['top', 'down']
-    for prefix in prefixes:
-        with open(f'IOU_output_{prefix}.txt', 'r') as f:
-            for line in f:
-                batch_num, idx = map(int, line.split(',')[:-1])
-                iou_list_top.append(batch_num * batch_size + idx) \
-                    if prefix == 'top' else iou_list_down.append(batch_num * batch_size + idx)
+    if save_images_for_analysis:
+        # read the metrics of IOU #
+        iou_list_top, iou_list_down = [], []
+        prefixes = ['top', 'down']
+        for prefix in prefixes:
+            with open(f'IOU_output_{prefix}.txt', 'r') as f:
+                for line in f:
+                    batch_num, idx = map(int, line.split(',')[:-1])
+                    iou_list_top.append(batch_num * batch_size + idx) \
+                        if prefix == 'top' else iou_list_down.append(batch_num * batch_size + idx)
 
-    # iou_per_image.extend(iou_list)
-    # print(len(iou_per_image))
-    # top_5_indices = [index for index, value in sorted(list(enumerate(iou_per_image)), key=lambda x: x[1], reverse=True)[:5]]
-    # print(top_5_indices)
-    
-    nusc = NuScenes(version='v1.0-{}'.format(dset),dataroot=os.path.join(data_dir, dset),verbose=False)
-    split = {'v1.0-trainval': {True: 'train', False: 'val'},'v1.0-mini': {True: 'mini_train', False: 'mini_val'},
-            }[nusc.version][False]
-    scenes = create_splits_scenes()[split]
+        nusc = NuScenes(version='v1.0-{}'.format(dset),dataroot=os.path.join(data_dir, dset),verbose=False)
+        split = {'v1.0-trainval': {True: 'train', False: 'val'},'v1.0-mini': {True: 'mini_train', False: 'mini_val'},
+                }[nusc.version][False]
+        scenes = create_splits_scenes()[split]
 
-    for prefix in prefixes:
-        for data_type in ['CAM', 'BEV', 'RADAR', 'LIDAR']:
-            output_directory = f'../nuscenes/{prefix}/{data_type}'
-            os.makedirs(output_directory, exist_ok=True)
+        for prefix in prefixes:
+            for data_type in ['CAM', 'BEV', 'RADAR', 'LIDAR']:
+                output_directory = f'../nuscenes/{prefix}/{data_type}'
+                os.makedirs(output_directory, exist_ok=True)
 
-    all_samples = []
-    for name in scenes:
-        target_scene = None
-        for scene in nusc.scene:
-            if scene['name'] == name:
-                target_scene = scene
-                break
-        if target_scene is not None:
-            sample_tokens = target_scene['first_sample_token']
+        all_samples = []
+        for name in scenes:
+            target_scene = None
+            for scene in nusc.scene:
+                if scene['name'] == name:
+                    target_scene = scene
+                    break
+            if target_scene is not None:
+                sample_tokens = target_scene['first_sample_token']
 
-            while sample_tokens:
-                sample = nusc.get('sample', sample_tokens)
-                all_samples.append(sample)
-                sample_tokens = sample['next']
-        else:
-            print(f"No scene found with the name '{name}'.")
-
-
-    CAMERA_SENSOR = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
-    RADAR_SENSOR = ['RADAR_FRONT_LEFT', 'RADAR_FRONT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT',  'RADAR_BACK_RIGHT']
-    view_dictionary = dict(zip(RADAR_SENSOR, CAMERA_SENSOR))
-    CAMERA_SENSOR.insert(4, 'CAM_BACK')
-    
-    for i, iou_list in enumerate([iou_list_top, iou_list_down]):
-        for index in iou_list:
-            if index < len(all_samples):
-                sample_info = all_samples[index]
-                cam_images = {}
-                radar_images = {}
-
-                for sensor_name, sensor_data in sample_info['data'].items():
-                    sample_data = nusc.get('sample_data', sensor_data)
-                    out_path_base = f'../nuscenes/{prefixes[i]}'
-
-                    if 'CAM' in sensor_name:
-                        cam_images[sensor_name] = nusc.render_sample_data(sample_data['token'])
-
-                    else:
-                        nusc.render_sample_data(sample_data['token'], out_path= f'../nuscenes/{prefixes[i]}/BEV//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
-                    
-                    if 'RADAR' in sensor_name:
-                        radar_images[sensor_name] = nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, camera_channel=view_dictionary[sensor_name])
-                        
-                    if 'LIDAR' in sensor_name:
-                        nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, out_path= f'../nuscenes/{prefixes[i]}/LIDAR//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
-                
-                radar_images['RADAR_BACK'] = cam_images['CAM_BACK']
-
-                create_grid(cam_images, 2, 3, os.path.join(out_path_base, f'CAM/batch_{index//batch_size}_idx_{index%batch_size}.jpg'))
-
-                create_grid(radar_images, 2, 3, os.path.join(out_path_base, f'RADAR/batch_{index//batch_size}_idx_{index%batch_size}.jpg'), crop_for_radar=True)
+                while sample_tokens:
+                    sample = nusc.get('sample', sample_tokens)
+                    all_samples.append(sample)
+                    sample_tokens = sample['next']
             else:
-                print(f"Index {index} is out of range.")
+                print(f"No scene found with the name '{name}'.")
+
+
+        CAMERA_SENSOR = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
+        RADAR_SENSOR = ['RADAR_FRONT_LEFT', 'RADAR_FRONT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT',  'RADAR_BACK_RIGHT']
+        view_dictionary = dict(zip(RADAR_SENSOR, CAMERA_SENSOR))
+        CAMERA_SENSOR.insert(4, 'CAM_BACK')
+        
+        for i, iou_list in enumerate([iou_list_top, iou_list_down]):
+            for index in iou_list:
+                if index < len(all_samples):
+                    sample_info = all_samples[index]
+                    cam_images = {}
+                    radar_images = {}
+
+                    for sensor_name, sensor_data in sample_info['data'].items():
+                        sample_data = nusc.get('sample_data', sensor_data)
+                        out_path_base = f'../nuscenes/{prefixes[i]}'
+
+                        if 'CAM' in sensor_name:
+                            cam_images[sensor_name] = nusc.render_sample_data(sample_data['token'])
+
+                        else:
+                            nusc.render_sample_data(sample_data['token'], out_path= f'../nuscenes/{prefixes[i]}/BEV//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
+                        
+                        if 'RADAR' in sensor_name:
+                            radar_images[sensor_name] = nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, camera_channel=view_dictionary[sensor_name])
+                            
+                        if 'LIDAR' in sensor_name:
+                            nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, out_path= f'../nuscenes/{prefixes[i]}/LIDAR//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
+                    
+                    radar_images['RADAR_BACK'] = cam_images['CAM_BACK']
+
+                    create_grid(cam_images, 2, 3, os.path.join(out_path_base, f'CAM/batch_{index//batch_size}_idx_{index%batch_size}.jpg'))
+                    create_grid(radar_images, 2, 3, os.path.join(out_path_base, f'RADAR/batch_{index//batch_size}_idx_{index%batch_size}.jpg'), crop_for_radar=True)
+                else:
+                    print(f"Index {index} is out of range.")
 
     writer_ev.close()
     
@@ -548,11 +543,9 @@ def create_grid(images, rows, cols, out_path, crop_for_radar=False):
     order_pattern = ['FRONT_LEFT', 'FRONT', 'FRONT_RIGHT','BACK_RIGHT' , 'BACK', 'BACK_LEFT']
     ordered_keys = [key for pattern in order_pattern for key in images.keys() if key.endswith(pattern)]
 
-    # 첫 번째 이미지의 크기로 그리드 이미지 크기 계산
     first_image = images[ordered_keys[0]]
     height, width, _ = first_image.shape # 697, 412 for cam and 697, 392 for radar
 
-    # 새로운 이미지 생성
     grid_img = Image.new('RGB', (cols * width, rows * height))
 
     for idx, key in enumerate(ordered_keys):
