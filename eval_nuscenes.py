@@ -246,7 +246,10 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum()
+    intersection_batch = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=(1,2,3))
     union = ((seg_bev_e_round+seg_bev_g)*valid_bev_g).clamp(0,1).sum()
+    union_batch = ((seg_bev_e_round+seg_bev_g)*valid_bev_g).clamp(0,1).sum(dim=(1,2,3))
+
     # iou_list = []
     # for b in range(seg_bev_e_round.size(0)):
     #     intersection_ = (seg_bev_e_round*seg_bev_g*valid_bev_g)[b].sum()
@@ -255,7 +258,9 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     #     iou_list.append(iou.item())
 
     metrics['intersection'] = intersection.item()
+    metrics['intersection_batch'] = intersection_batch.cpu()
     metrics['union'] = union.item()
+    metrics['union_batch'] = union_batch.cpu()
     metrics['ce_loss'] = ce_loss.item()
     metrics['center_loss'] = center_loss.item()
     metrics['offset_loss'] = offset_loss.item()
@@ -277,7 +282,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
         sw.summ_flow('2_outputs/offset_bev_e', offset_bev_e, clip=10)
         sw.summ_flow('2_outputs/offset_bev_g', offset_bev_g, clip=10)
 
-    return total_loss, metrics
+    return total_loss, metrics, seg_bev_e, seg_bev_g
 
 def main(
         exp_name='eval',
@@ -306,7 +311,8 @@ def main(
         # cuda
         device_ids=[4,5,6,7],
         make_iou_output = False,
-        save_images_for_analysis = False
+        save_images_for_analysis = False,
+        seg_bev=False
 ):
     B = batch_size
     assert(B % len(device_ids) == 0) # batch size must be divisible by number of gpus
@@ -417,16 +423,52 @@ def main(
         read_time = time.time()-read_start_time
 
         with torch.no_grad():
-            total_loss, metrics = run_model(model, seg_loss_fn, sample, device, sw_ev)
+            total_loss, metrics, seg_bev_e, seg_bev_g = run_model(model, seg_loss_fn, sample, device, sw_ev)
 
-        num_batch += 1
+        if seg_bev:
+            for prefix in ['top','down']:
+                B_IDX_list=[]
+
+                with open(f'IOU_output_{prefix}.txt', 'r') as f:
+                    for line in f:
+                        numbers = list(map(int, line.split(',')[:-1]))
+                        B_IDX_list.append((numbers[0], numbers[1]))
+
+                os.makedirs(f'../nuscenes/{prefix}/BEV_e', exist_ok=True)
+                os.makedirs(f'../nuscenes/{prefix}/BEV_g', exist_ok=True)
+
+                # save expected seg_bev_e
+                for idx in range(batch_size):
+                    if (num_batch, idx) in B_IDX_list:
+
+                        if num_batch == 5 and idx == 2:
+                            import ipdb; ipdb.set_trace()
+
+                        bev_e_path = f'../nuscenes/{prefix}/BEV_e/batch_{num_batch}_idx_{idx}.jpg'
+                        bev_g_path = f'../nuscenes/{prefix}/BEV_g/batch_{num_batch}_idx_{idx}.jpg'
+                        numpy_img_e = torch.sigmoid(seg_bev_e[idx]).round().cpu().numpy()[0]*255
+                        numpy_img_g = torch.sigmoid(seg_bev_g[idx]).round().cpu().numpy()[0]*255
+                        numpy_img_e=255-numpy_img_e
+                        numpy_img_g=255-numpy_img_g
+                        img_e = Image.fromarray(numpy_img_e.astype(np.uint8), 'L')
+                        img_g = Image.fromarray(numpy_img_g.astype(np.uint8), 'L')
+                        img_e.save(bev_e_path)
+                        img_g.save(bev_g_path)
+
+
 
         # write the metrics of IOU #
         if make_iou_output:
-            file_path = f'IOU_record_{use_radar}.txt'
+            file_path = f'IOU_record_use_radar_{use_radar}.txt'
             for i in range(len(metrics['intersection_batch'])):
                 with open(file_path, 'a') as f:
-                    f.write(f'{num_batch}, {i}, {100*metrics["intersection_batch"][i]/metrics["union_batch"][i]}\n') # batch, idx pd batch, 100*intersection/union
+                    if metrics['union_batch'][i] == 0:
+                        iou_value = 0.0
+                    else:
+                        iou_value = 100*metrics["intersection_batch"][i]/metrics["union_batch"][i]
+                    f.write(f'{num_batch}, {i}, {iou_value}\n') # batch, idx pd batch, 100*intersection/union
+
+        num_batch += 1
 
         intersection += metrics['intersection']
         union += metrics['union']
@@ -459,8 +501,7 @@ def main(
             model_name, global_step, max_iters, read_time, iter_time, 1000*time_pool_ev.mean(),
             total_loss.item(), 100*intersection/union))
     print('final %s mean iou' % dset, 100*intersection/union)
-    
-    
+
     if save_images_for_analysis:
         # read the metrics of IOU #
         iou_list_top, iou_list_down = [], []
@@ -468,9 +509,9 @@ def main(
         for prefix in prefixes:
             with open(f'IOU_output_{prefix}.txt', 'r') as f:
                 for line in f:
-                    batch_num, idx = map(int, line.split(',')[:-1])
-                    iou_list_top.append(batch_num * batch_size + idx) \
-                        if prefix == 'top' else iou_list_down.append(batch_num * batch_size + idx)
+                    B, IDX = map(int, line.split(',')[:-1])
+                    iou_list_top.append(B * batch_size + IDX) \
+                        if prefix == 'top' else iou_list_down.append(B * batch_size + IDX)
 
         nusc = NuScenes(version='v1.0-{}'.format(dset),dataroot=os.path.join(data_dir, dset),verbose=False)
         split = {'v1.0-trainval': {True: 'train', False: 'val'},'v1.0-mini': {True: 'mini_train', False: 'mini_val'},
@@ -504,7 +545,7 @@ def main(
         RADAR_SENSOR = ['RADAR_FRONT_LEFT', 'RADAR_FRONT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT',  'RADAR_BACK_RIGHT']
         view_dictionary = dict(zip(RADAR_SENSOR, CAMERA_SENSOR))
         CAMERA_SENSOR.insert(4, 'CAM_BACK')
-        
+
         for i, iou_list in enumerate([iou_list_top, iou_list_down]):
             for index in iou_list:
                 if index < len(all_samples):
@@ -518,16 +559,15 @@ def main(
 
                         if 'CAM' in sensor_name:
                             cam_images[sensor_name] = nusc.render_sample_data(sample_data['token'])
-
                         else:
-                            nusc.render_sample_data(sample_data['token'], out_path= f'../nuscenes/{prefixes[i]}/BEV//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
-                        
+                            nusc.render_sample_data(sample_data['token'], out_path= f'../nuscenes/{prefixes[i]}/BEV/batch_{index//batch_size}_idx_{index%batch_size}.jpg')
+
                         if 'RADAR' in sensor_name:
                             radar_images[sensor_name] = nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, camera_channel=view_dictionary[sensor_name])
-                            
+
                         if 'LIDAR' in sensor_name:
-                            nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, out_path= f'../nuscenes/{prefixes[i]}/LIDAR//batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
-                    
+                            nusc.render_pointcloud_in_image(sample_info['token'], pointsensor_channel=sensor_name, out_path= f'../nuscenes/{prefixes[i]}/LIDAR/batch_{index//batch_size}_idx_{index%batch_size}_{sensor_name}.jpg')
+
                     radar_images['RADAR_BACK'] = cam_images['CAM_BACK']
 
                     create_grid(cam_images, 2, 3, os.path.join(out_path_base, f'CAM/batch_{index//batch_size}_idx_{index%batch_size}.jpg'))
@@ -536,8 +576,8 @@ def main(
                     print(f"Index {index} is out of range.")
 
     writer_ev.close()
-    
-    
+
+
 def create_grid(images, rows, cols, out_path, crop_for_radar=False):
 
     order_pattern = ['FRONT_LEFT', 'FRONT', 'FRONT_RIGHT','BACK_RIGHT' , 'BACK', 'BACK_LEFT']
@@ -555,10 +595,10 @@ def create_grid(images, rows, cols, out_path, crop_for_radar=False):
 
         # Convert the numpy array to a PIL Image and convert to RGB
         image = Image.fromarray(images[key]).convert('RGB')
-        
+
         if crop_for_radar == True and image.size == (697, 412):
             image = image.crop((0, 0, 697, 392))  # Cropping
-            
+
         # Calculate the box for pasting
         left = grid_col * width
         upper = grid_row * height

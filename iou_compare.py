@@ -38,7 +38,7 @@ def compare_iou(true_file_path, false_file_path, output_top_file_path, output_do
             file.write(f'{item[0]}, {item[1]}, {item[2]}\n')
 
 if __name__ == '__main__':
-    compare_iou('/gallery_uffizi/dongwook.lee/simple_bev/IOU_record_True.txt',
-                '/gallery_uffizi/dongwook.lee/simple_bev/IOU_record_False.txt',
+    compare_iou('/gallery_uffizi/dongwook.lee/simple_bev/IOU_record_use_radar_True.txt',
+                '/gallery_uffizi/dongwook.lee/simple_bev/IOU_record_use_radar_False.txt',
                 'IOU_output_top.txt',
                 'IOU_output_down.txt')
