@@ -403,6 +403,14 @@ class KalmanFuser(nn.Module):
         for conv in [self.feat_to_mats, self.feat_to_mats_camera]:
             conv.weight.data.normal_(std=1e-6)
 
+    def reparameterize(self, mean, var=None, logvar=None, eps=1e-10):
+        assert (var is None) != (logvar is None)
+        if var is not None:
+            return mean + (var + eps).sqrt() * torch.randn_like(var)
+        if logvar is not None:
+            return mean + (0.5 * logvar).exp() * torch.randn_like(logvar)
+        raise RuntimeError('specify either var or logvar!')
+
     def forward(self, feat_bev_, metarad_occ_mem0):
         z_posteriors = []
         z_priors = []
@@ -440,7 +448,7 @@ class KalmanFuser(nn.Module):
             F_next = 1 + F_next
             z_posteriors.append((z_mean, z_logvar))
 
-            z_curr = torch.normal(z_mean, (0.5*z_logvar).exp()) if self.training else z_mean
+            z_curr = self.reparameterize(z_mean, logvar=z_logvar) if self.training else z_mean
             radar_mses.append(
                 ((self.z_to_radar(z_curr) - radar_raw) * mask).square().mean(dim=(-1, -2)).view(-1, 16, self.Y)
             )
@@ -464,7 +472,7 @@ class KalmanFuser(nn.Module):
                 mu = mu + kalman_gain * residual
                 var = (1 - kalman_gain * H_curr) * var
 
-        sample = torch.normal(mu, 0.5*var) if self.training else mu
+        sample = self.reparameterize(mu, var=var) if self.training else mu
 
         return sample, z_posteriors, z_priors, radar_mses, camera_nll, s_init
 
