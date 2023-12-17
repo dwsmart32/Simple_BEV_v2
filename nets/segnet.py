@@ -403,16 +403,13 @@ class KalmanFuser(nn.Module):
         for conv in [self.feat_to_mats, self.feat_to_mats_camera]:
             conv.weight.data.normal_(std=1e-6)
 
-    # def reparameterize(self, mean, var=None, logvar=None, eps=1e-10):
-    #     assert (var is None) != (logvar is None)
-    #     if var is not None:
-    #         return mean + (var + eps).sqrt() * torch.randn_like(var)
-    #     if logvar is not None:
-    #         return mean + (0.5 * logvar).exp() * torch.randn_like(logvar)
-    #     raise RuntimeError('specify either var or logvar!')
-
-    def reparameterize(self, mean, var, eps=1e-10):
-        return mean + (var + eps).sqrt() * torch.randn_like(var)
+    def reparameterize(self, mean, var=None, logvar=None, eps=1e-10):
+        assert (var is None) != (logvar is None)
+        if var is not None:
+            return mean + (var + eps).sqrt() * torch.randn_like(var)
+        if logvar is not None:
+            return mean + (0.5 * logvar).exp() * torch.randn_like(logvar)
+        raise RuntimeError('specify either var or logvar!')
 
     def forward(self, feat_bev_, metarad_occ_mem0):
         z_posteriors = []
@@ -428,11 +425,11 @@ class KalmanFuser(nn.Module):
                 radar_raw = radar_raw.reshape(radar_raw.shape[0], -1, *radar_raw.shape[-2:])
                 mask = (torch.ones(1, device=metarad_occ_mem0.device, dtype=torch.bool).expand_as(metarad_occ_mem0[:,:-1]) & mask).permute(0,1,3,2,4)
                 mask = mask.reshape(mask.shape[0], -1, *mask.shape[-2:])
-            radar_feat = self.radar_feature_extractor(radar_raw)
+            radar_feat = torch.tanh(self.radar_feature_extractor(radar_raw))
 
             if step == nsweeps-1:
                 camera = feat_bev_
-                camera_feat = F.conv2d(camera, self.camera_feature_extractor)
+                camera_feat = torch.tanh(F.conv2d(camera, self.camera_feature_extractor))
 
             if step == 0:
                 s_init = (None, None)
@@ -442,19 +439,17 @@ class KalmanFuser(nn.Module):
                 var = 1
                 
             pred_mu = F_curr * mu
-            # pred_var = F_curr.square() * var + logQ_curr.exp()
-            # res_var = H_curr.square() * pred_var + logR_curr.exp()
-            pred_var = F_curr.square() * var + F.softplus(logQ_curr)
-            res_var = H_curr.square() * pred_var + F.softplus(logR_curr)
+            pred_var = F_curr.square() * var + torch.sigmoid(logQ_curr)
+            res_var = H_curr.square() * pred_var + torch.sigmoid(logR_curr)
             z_pred = H_curr * pred_mu
             z_priors.append((z_pred, res_var))
 
             z_mean, z_logvar, F_next, H_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
-            F_next = 1 + F_next
-            z_var = F.softplus(z_logvar)
+            z_mean = torch.tanh(z_mean)
+            z_var = torch.sigmoid(z_logvar)
             z_posteriors.append((z_mean, z_var))
 
-            z_curr = self.reparameterize(z_mean, z_var) if self.training else z_mean
+            z_curr = self.reparameterize(z_mean, var=z_var) if self.training else z_mean
             radar_mses.append(
                 ((self.z_to_radar(z_curr) - radar_raw) * mask).square().mean(dim=(-1, -2)).view(-1, 16, self.Y)
             )
@@ -466,19 +461,20 @@ class KalmanFuser(nn.Module):
 
             if step < nsweeps-1:
                 F_curr, H_curr, logQ_curr, logR_curr = F_next, H_next, logQ_next, logR_next
+                F_next = 1 + F_next
             else:
                 H_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
 
                 camera_pred = H_cam_curr * mu
                 residual = camera_feat - camera_pred
-                res_var = H_cam_curr.square() * var + F.softplus(logR_cam_curr)
+                res_var = H_cam_curr.square() * var + torch.sigmoid(logR_cam_curr)
                 camera_nll = residual.square()/(2*res_var)
 
                 kalman_gain = var * H_cam_curr / res_var
                 mu = mu + kalman_gain * residual
                 var = (1 - kalman_gain * H_curr) * var
 
-        sample = self.reparameterize(mu, var) if self.training else mu
+        sample = self.reparameterize(mu, var=var) if self.training else mu
 
         return sample, z_posteriors, z_priors, radar_mses, camera_nll, s_init
 
