@@ -241,7 +241,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     # obser_kld_loss = sum([kl_divergence(Normal(z_posterior[0], z_posterior[1]), Normal(z_prior[0], z_prior[1])).mean() for z_posterior, z_prior in zip(z_posteriors, z_priors)])
     # state_kld_loss = (((2*s_init[1]).exp() + s_init[0].square())/2 - s_init[1] - 1/2).mean()
     # obser_kld_loss = sum([(((2*z_posterior[1]).exp() + (z_posterior[0] - z_prior[0]).square())/(2*(2*z_prior[1]).exp())).mean() + (z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
-    obser_kld_loss = sum([(((z_posterior[1]).exp() + (z_posterior[0] - z_prior[0]).square())/(2*(z_prior[1]).exp())).mean() + 0.5*(z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+    obser_kld_loss = sum([((z_posterior[1] + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1])).mean() + 0.5*(z_prior[1] / z_posterior[1]).log().mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
 
     # total_loss = total_loss + 0.001 * radar_recon_loss + 0.0001 * (camera_recon_loss + state_kld_loss + obser_kld_loss)
     total_loss = total_loss + 0.0001 * radar_recon_loss + 0.001 * (camera_recon_loss + obser_kld_loss)
