@@ -23,9 +23,10 @@ def save(ckpt_dir, optimizer, model, global_step, scheduler=None, model_ema=None
     print("saved a checkpoint: %s" % (model_path))
 
 
-def load(ckpt_dir, model, optimizer=None, scheduler=None, model_ema=None, step=0, model_name='model', ignore_load=None, device_ids=[0]):
+def load(ckpt_dir, model, optimizer=None, scheduler=None, model_ema=None, step=0, model_name='model', ignore_load=None, device_ids=[0], device=None):
     print('reading ckpt from %s' % ckpt_dir)
-    device = 'cuda:%d' % device_ids[0]
+    if device is None:
+        device = 'cuda:%d' % device_ids[0]
     
     if not os.path.exists(ckpt_dir):
         print('...there is no full checkpoint here!')
@@ -64,6 +65,7 @@ def load(ckpt_dir, model, optimizer=None, scheduler=None, model_ema=None, step=0
                 
             if optimizer is not None:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                optimizer.param_groups[0]['capturable'] = True
             if scheduler is not None:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             if model_ema is not None:

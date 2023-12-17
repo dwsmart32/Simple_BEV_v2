@@ -17,6 +17,17 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 import torch.nn.functional as F
+import torch.nn as nn
+
+
+class DummyDataParallelWrapper(nn.Module):
+    def __init__(self, model):
+        super(DummyDataParallelWrapper, self).__init__()
+        self.module = model
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
 
 random.seed(125)
 np.random.seed(125)
@@ -75,6 +86,8 @@ def balanced_mse_loss(pred, gt, valid=None):
     return loss
     
 def run_model(model, loss_fn, d, device='cuda:0', sw=None):
+    # torch.cuda.empty_cache()
+
     metrics = {}
     total_loss = torch.tensor(0.0, requires_grad=True).to(device)
 
@@ -102,6 +115,19 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     offset_bev_g = offset_bev_g[:,0]
     radar_data = radar_data[:,0]
     egopose = egopose[:,0]
+
+    # with torch.no_grad():
+    #     mean = torch.tensor([0, 0, 0, 1.6412247e+00,  5.0382824e+01,  8.1876965e+00,  1.2342781e+00,
+    #         6.6870111e-01, -6.6204011e-02, -1.3079891e-02,  1.0000000e+00,
+    #         3.0000000e+00,  1.9528118e+01,  1.9885292e+01,  0.0000000e+00,
+    #         1.0323220e+00,  1.6299629e+01,  3.0000000e+00,  1.4944004e-01, 0], dtype=torch.float, device=radar_data.device).view(1, -1, 1)
+
+    #     std = torch.tensor([1, 1, 1, 1.3189236 , 35.28537   ,  7.496517  ,  5.893061  ,  5.5774555 ,
+    #         1.429258  ,  0.39548367,  0.1       ,  0.1       ,  0.79458183,
+    #         1.2777594 ,  0.1       ,  0.25211594,  0.58270097,  0.1       ,
+    #         0.1103558, 1], dtype=torch.float, device=radar_data.device).view(1, -1, 1)
+
+    #     radar_data = (radar_data - mean) / std
     
     origin_T_velo0t = egopose.to(device) # B,T,4,4
     lrtlist_velo = lrtlist_velo.to(device)
@@ -155,8 +181,8 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     
     V = xyz_velo0.shape[1]
 
-    occ_mem0 = vox_util.voxelize_xyz(xyz_cam0, Z, Y, X, assert_cube=False)
-    rad_occ_mem0 = vox_util.voxelize_xyz(rad_xyz_cam0, Z, Y, X, assert_cube=False)
+    # occ_mem0 = vox_util.voxelize_xyz(xyz_cam0, Z, Y, X, assert_cube=False)
+    # rad_occ_mem0 = vox_util.voxelize_xyz(rad_xyz_cam0, Z, Y, X, assert_cube=False)
     metarad_occ_mem0 = vox_util.voxelize_xyz_and_feats(rad_xyz_cam0, meta_rad, Z, Y, X, assert_cube=False)
 
     if not (model.module.use_radar or model.module.use_lidar):
@@ -164,11 +190,12 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     elif model.module.use_lidar:
         assert(model.module.use_radar==False) # either lidar or radar, not both
         assert(model.module.use_metaradar==False) # either lidar or radar, not both
-        in_occ_mem0 = occ_mem0
+        # in_occ_mem0 = occ_mem0
     elif model.module.use_radar and model.module.use_metaradar:
         in_occ_mem0 = metarad_occ_mem0
     elif model.module.use_radar:
-        in_occ_mem0 = rad_occ_mem0
+        # in_occ_mem0 = rad_occ_mem0
+        pass
     elif model.module.use_metaradar:
         assert(False) # cannot use_metaradar without use_radar
 
@@ -176,7 +203,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     lrtlist_cam0_g = lrtlist_cam0
 
-    _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e = model(
+    _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e, z_posteriors, z_priors, radar_mses, camera_nll, s_init = model(
             rgb_camXs=rgb_camXs,
             pix_T_cams=pix_T_cams,
             cam0_T_camXs=cam0_T_camXs,
@@ -206,6 +233,18 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     total_loss += ce_uncertainty_loss
     total_loss += center_uncertainty_loss
     total_loss += offset_uncertainty_loss
+    original_loss = total_loss
+
+    radar_recon_loss = (sum(radar_mses) * (-model.module.radar_recon_weights).exp()).sum(dim=1).mean()
+    camera_recon_loss = camera_nll.mean()
+    # state_kld_loss = kl_divergence(Normal(s_init[0], s_init[1]), Normal(torch.zeros_like(s_init[0]), torch.ones_like(s_init[1]))).mean()
+    # obser_kld_loss = sum([kl_divergence(Normal(z_posterior[0], z_posterior[1]), Normal(z_prior[0], z_prior[1])).mean() for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+    # state_kld_loss = (((2*s_init[1]).exp() + s_init[0].square())/2 - s_init[1] - 1/2).mean()
+    # obser_kld_loss = sum([(((2*z_posterior[1]).exp() + (z_posterior[0] - z_prior[0]).square())/(2*(2*z_prior[1]).exp())).mean() + (z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+    obser_kld_loss = sum([(((z_posterior[1]).exp() + (z_posterior[0] - z_prior[0]).square())/(2*(z_prior[1]).exp())).mean() + 0.5*(z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+
+    # total_loss = total_loss + 0.001 * radar_recon_loss + 0.0001 * (camera_recon_loss + state_kld_loss + obser_kld_loss)
+    total_loss = total_loss + 0.001 * radar_recon_loss + 0.0001 * (camera_recon_loss + obser_kld_loss)
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=[1,2,3])
@@ -220,10 +259,17 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     metrics['offset_weight'] = model.module.offset_weight.item()
     metrics['iou'] = iou.item()
 
+    metrics['original_loss'] = original_loss.item()
+    metrics['radar_recon_loss'] = radar_recon_loss.item()
+    metrics['radar_recon_weights'] = {f'{k}': v.item() for k, v in enumerate(model.module.radar_recon_weights.detach().view(-1).cpu())}
+    metrics['camera_recon_loss'] = camera_recon_loss.item()
+    # metrics['state_kld_loss'] = state_kld_loss.item()
+    metrics['obser_kld_loss'] = obser_kld_loss.item()
+
     if sw is not None and sw.save_this:
-        if model.module.use_radar or model.module.use_lidar:
-            sw.summ_occ('0_inputs/rad_occ_mem0', rad_occ_mem0)
-        sw.summ_occ('0_inputs/occ_mem0', occ_mem0)
+        # if model.module.use_radar or model.module.use_lidar:
+            # sw.summ_occ('0_inputs/rad_occ_mem0', rad_occ_mem0)
+        # sw.summ_occ('0_inputs/occ_mem0', occ_mem0)
         sw.summ_rgb('0_inputs/rgb_camXs', torch.cat(rgb_camXs[0:1].unbind(1), dim=-1))
 
         sw.summ_oned('2_outputs/feat_bev_e', torch.mean(feat_bev_e, dim=1, keepdim=True))
@@ -246,12 +292,12 @@ def main(
         exp_name='debug',
         # training
         max_iters=100000,
-        log_freq=1000,
+        log_freq=500,
         shuffle=True,
         dset='trainval',
         do_val=True,
         val_freq=100,
-        save_freq=1000,
+        save_freq=500,
         batch_size=8,
         grad_acc=5,
         lr=3e-4,
@@ -361,7 +407,10 @@ def main(
     seg_loss_fn = SimpleLoss(2.13).to(device) # value from lift-splat
     model = Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, rand_flip=rand_flip)
     model = model.to(device)
-    model = torch.nn.DataParallel(model, device_ids=device_ids)
+    if len(device_ids) == 1:
+        model = DummyDataParallelWrapper(model)
+    else:
+        model = torch.nn.DataParallel(model, device_ids=device_ids)
     parameters = list(model.parameters())
     if use_scheduler:
         optimizer, scheduler = fetch_optimizer(lr, weight_decay, 1e-8, max_iters, model.parameters())
@@ -375,6 +424,9 @@ def main(
     if init_dir:
         if load_step and load_optimizer:
             global_step = saverloader.load(init_dir, model.module, optimizer, ignore_load=ignore_load)
+            if use_scheduler:
+                for _ in range(global_step):
+                    scheduler.step()
         elif load_step:
             global_step = saverloader.load(init_dir, model.module, ignore_load=ignore_load)
         else:
@@ -418,7 +470,8 @@ def main(
                     global_step=global_step,
                     log_freq=log_freq,
                     fps=2,
-                    scalar_freq=int(log_freq/2),
+                    # scalar_freq=int(log_freq/2),
+                    scalar_freq=1,
                     just_gif=True)
             else:
                 sw_t = None
@@ -478,6 +531,13 @@ def main(
         sw_t.summ_scalar('pooled/offset_weight', offset_weight_pool_t.mean())
         sw_t.summ_scalar('stats/offset_weight', metrics['offset_weight'])
 
+        sw_t.summ_scalar('stats/original_loss', metrics['original_loss'])
+        sw_t.summ_scalar('stats/radar_recon_loss', metrics['radar_recon_loss'])
+        sw_t.summ_scalar('stats/camera_recon_loss', metrics['camera_recon_loss'])
+        sw_t.summ_scalar('stats/obser_kld_loss', metrics['obser_kld_loss'])
+        if sw_t is not None:
+            writer_t.add_scalars('stats/radar_recon_weights', metrics['radar_recon_weights'], global_step)
+
         # run val
         if do_val and (global_step) % val_freq == 0:
             torch.cuda.empty_cache()
@@ -487,7 +547,8 @@ def main(
                 global_step=global_step,
                 log_freq=log_freq,
                 fps=5,
-                scalar_freq=int(log_freq/2),
+                # scalar_freq=int(log_freq/2),
+                scalar_freq=1,
                 just_gif=True)
             try:
                 sample = next(val_iterloader)
@@ -514,6 +575,11 @@ def main(
 
             offset_pool_v.update([metrics['offset_loss']])
             sw_v.summ_scalar('pooled/offset_loss', offset_pool_v.mean())
+
+            sw_v.summ_scalar('stats/original_loss', metrics['original_loss'])
+            sw_v.summ_scalar('stats/radar_recon_loss', metrics['radar_recon_loss'])
+            sw_v.summ_scalar('stats/camera_recon_loss', metrics['camera_recon_loss'])
+            sw_v.summ_scalar('stats/obser_kld_loss', metrics['obser_kld_loss'])
 
             model.train()
         
@@ -546,5 +612,3 @@ def main(
 
 if __name__ == '__main__':
     Fire(main)
-
-
