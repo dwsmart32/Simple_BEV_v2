@@ -464,7 +464,7 @@ class KalmanFuser(nn.Module):
                 mu = mu + kalman_gain * residual
                 var = (1 - kalman_gain * H_curr) * var
 
-        sample = torch.normal(mu, (0.5*var).exp()) if self.training else mu
+        sample = torch.normal(mu, 0.5*var) if self.training else mu
 
         return sample, z_posteriors, z_priors, radar_mses, camera_nll, s_init
 
