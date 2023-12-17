@@ -244,7 +244,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     obser_kld_loss = sum([((z_posterior[1] + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1])).mean() + 0.5*(z_prior[1] / z_posterior[1]).log().mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
 
     # total_loss = total_loss + 0.001 * radar_recon_loss + 0.0001 * (camera_recon_loss + state_kld_loss + obser_kld_loss)
-    total_loss = total_loss + 0.0001 * radar_recon_loss + 0.001 * (camera_recon_loss + obser_kld_loss)
+    total_loss = total_loss + 0.0001 * radar_recon_loss + 0.0001 * (camera_recon_loss + obser_kld_loss)
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=[1,2,3])
