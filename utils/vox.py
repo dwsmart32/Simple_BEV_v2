@@ -209,7 +209,7 @@ class Vox_util(object):
         voxels[vox_inds.long()] = 1.0
         # zero out the singularity
         voxels[base.long()] = 0.0
-        voxels = voxels.reshape(B, 1, Z, Y, X)
+        voxels = voxels.view(B, 1, Z, Y, X)
         # B x 1 x Z x Y x X
         return voxels
 
@@ -284,7 +284,7 @@ class Vox_util(object):
         feat_voxels[vox_inds.long()] = feat
         # zero out the singularity
         feat_voxels[base.long()] = 0.0
-        feat_voxels = feat_voxels.reshape(B, Z, Y, X, D2).permute(0, 4, 1, 2, 3)
+        feat_voxels = feat_voxels.view(B, Z, Y, X, D2).permute(0, 4, 1, 2, 3)
         # B x C x Z x Y x X
         return feat_voxels
 
@@ -319,7 +319,7 @@ class Vox_util(object):
         x_valid = (x>-0.5).bool() & (x<float(W-0.5)).bool()
         y_valid = (y>-0.5).bool() & (y<float(H-0.5)).bool()
         z_valid = (z>0.0).bool()
-        valid_mem = (x_valid & y_valid & z_valid).reshape(B, 1, Z, Y, X).float()
+        valid_mem = (x_valid & y_valid & z_valid).view(B, 1, Z, Y, X).float()
 
         if (0):
             # handwritten version
@@ -333,10 +333,10 @@ class Vox_util(object):
             z_pixB = torch.zeros_like(x)
             xyz_pixB = torch.stack([x_pixB, y_pixB, z_pixB], axis=2)
             rgb_camB = rgb_camB.unsqueeze(2)
-            xyz_pixB = torch.reshape(xyz_pixB, [B, Z, Y, X, 3])
+            xyz_pixB = xyz_pixB.view([B, Z, Y, X, 3])
             values = F.grid_sample(rgb_camB, xyz_pixB, align_corners=False)
 
-        values = torch.reshape(values, (B, C, Z, Y, X))
+        values = values.view((B, C, Z, Y, X))
         values = values * valid_mem
         return values
 
@@ -377,14 +377,14 @@ class Vox_util(object):
         x_valid = (x>-0.5).bool() & (x<float(W-0.5)).bool()
         y_valid = (y>-0.5).bool() & (y<float(H-0.5)).bool()
         z_valid = (z_camB>0.0).bool()
-        valid_mem = (x_valid & y_valid & z_valid).reshape(B, 1, Z, Y, X).float()
+        valid_mem = (x_valid & y_valid & z_valid).view(B, 1, Z, Y, X).float()
 
         z_tileB, y_pixB, x_pixB = utils.basic.normalize_grid3d(z_tileB, y, x, D, H, W)
         xyz_pixB = torch.stack([x_pixB, y_pixB, z_tileB], axis=2)
-        xyz_pixB = torch.reshape(xyz_pixB, [B, Z, Y, X, 3])
+        xyz_pixB = xyz_pixB.view([B, Z, Y, X, 3])
         values = F.grid_sample(rgb_tileB, xyz_pixB, align_corners=False)
 
-        values = torch.reshape(values, (B, C, Z, Y, X))
+        values = values.view((B, C, Z, Y, X))
         values = values * valid_mem
         return values
     
@@ -411,8 +411,8 @@ class Vox_util(object):
             grid = torch.stack([grid_x, grid_y, grid_z], dim=1)
             # this is B x 3 x Z x Y x X
             
-        xyz = xyz.reshape(B, N, 3, 1, 1, 1)
-        grid = grid.reshape(B, 1, 3, Z, Y, X)
+        xyz = xyz.view(B, N, 3, 1, 1, 1)
+        grid = grid.view(B, 1, 3, Z, Y, X)
         # this is B x N x Z x Y x X
 
         # round the xyzs, so that at least one value matches the grid perfectly,
@@ -428,7 +428,7 @@ class Vox_util(object):
             dist_grid = torch.sum(off**2, dim=2, keepdim=False)
             # this is B x N x Z x Y x X
             if torch.is_tensor(radius):
-                radius = radius.reshape(B, N, 1, 1, 1)
+                radius = radius.view(B, N, 1, 1, 1)
             mask = torch.exp(-dist_grid/(2*radius*radius))
             # zero out near zero
             mask[mask < 0.001] = 0.0
@@ -467,8 +467,8 @@ class Vox_util(object):
         grid = torch.stack([grid_x, grid_z], dim=1)
         # this is B x 2 x Z x X
 
-        xz = xz.reshape(B, N, 2, 1, 1)
-        grid = grid.reshape(B, 1, 2, Z, X)
+        xz = xz.view(B, N, 2, 1, 1)
+        grid = grid.view(B, 1, 2, Z, X)
         # these are ready to broadcast to B x N x Z x X
 
         # round the points, so that at least one value matches the grid perfectly,
@@ -483,7 +483,7 @@ class Vox_util(object):
         dist_grid = torch.sum(off**2, dim=2, keepdim=False)
         # this is B x N x Z x X
         if torch.is_tensor(radius):
-            radius = radius.reshape(B, N, 1, 1, 1)
+            radius = radius.view(B, N, 1, 1, 1)
         mask = torch.exp(-dist_grid/(2*radius*radius))
         # zero out near zero
         mask[mask < 0.001] = 0.0

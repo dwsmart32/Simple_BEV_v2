@@ -285,8 +285,192 @@ class Encoder_eff(nn.Module):
         x = self.depth_layer(x)  # feature and depth head
         return x
 
+class SparseInstanceNorm2d(nn.Module):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1):
+        super(SparseInstanceNorm2d, self).__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.momentum = momentum
+
+        # Initialize running statistics for inference
+        self.register_buffer('running_mean', torch.zeros(1, num_features, 1, 1))
+        self.register_buffer('running_var', torch.ones(1, num_features, 1, 1))
+
+    def forward(self, x):
+        with torch.no_grad():
+            is_non_zero = x.abs() > self.eps
+
+        if self.training:
+            with torch.no_grad():
+                # Calculate mean and std only for non-zero elements
+                num_non_zero = is_non_zero.float().sum(dim=(2, 3), keepdim=True).clamp(min=1.0)
+                mean = x.sum(dim=(2, 3), keepdim=True) / num_non_zero
+                var = (x - mean).square().sum(dim=(2, 3), keepdim=True) / num_non_zero
+
+                # Update running statistics during training
+                self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * mean.mean(dim=0, keepdim=True)
+                self.running_var = (1 - self.momentum) * self.running_var + self.momentum * var.mean(dim=0, keepdim=True)
+        else:
+            mean = self.running_mean
+            var = self.running_var
+
+        # Normalize using mean and std
+        x = torch.where(is_non_zero, (x - mean) / torch.sqrt(var + self.eps), torch.zeros([], device=x.device).expand_as(x))
+
+        return x
+
+class TinyUNet(nn.Module):
+    def __init__(self, in_channels, out_channels_list=None, base_channels=32):
+        super().__init__()
+
+        self.in_conv = nn.Sequential(
+            nn.Conv2d(in_channels, base_channels, 3, padding=13, bias=False),
+            nn.LeakyReLU(0.2, inplace=True)
+        ) # (C, 224, 224)
+
+        self.down_conv1 = self.make_down_conv(base_channels*2) # (2C, 112, 112)
+        self.down_conv2 = self.make_down_conv(base_channels*4) # (4C, 56, 56)
+        self.down_conv3 = self.make_down_conv(base_channels*8) # (8C, 28, 28)
+        self.down_conv4 = self.make_down_conv(base_channels*16) # (16C, 14, 14)
+        self.down_conv5 = self.make_down_conv(base_channels*32) # (32C, 7, 7)
+
+        self.up_conv1 = self.make_up_conv(base_channels*16) # (16C, 14, 14)
+        self.up_conv2 = self.make_up_conv(base_channels*8) # (16C, 28, 28)
+        self.up_conv3 = self.make_up_conv(base_channels*4) # (16C, 56, 56)
+        self.up_conv4 = self.make_up_conv(base_channels*2) # (16C, 112, 112)
+        self.up_conv5 = self.make_up_conv(base_channels) # (16C, 224, 224)
+
+        if out_channels_list is None:
+            self.out_convs = None
+        else:
+            self.out_convs = nn.ModuleList([nn.Conv2d(base_channels * (2**level), out_channels, 1) for level, out_channels in zip(range(5,-1,-1), out_channels_list)])
+
+    def make_down_conv(self, channels):
+        return nn.Sequential(
+            nn.Conv2d(channels//2, channels, 4, stride=2, padding=1, bias=False),
+            # nn.InstanceNorm2d(channels),
+            SparseInstanceNorm2d(channels),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+
+    def make_up_conv(self, channels):
+        return nn.Sequential(
+            nn.Conv2d(channels*3, channels, 3, padding=1, bias=False),
+            nn.InstanceNorm2d(channels),
+            # SparseInstanceNorm2d(channels),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+
+    def up_conv(self, name, x, skip_x):
+        x = torch.cat([F.interpolate(x, size=skip_x.size(-1), mode='bilinear'), skip_x], dim=1)
+        x = getattr(self, f'up_conv{name}')(x)
+        return x
+
+    def forward(self, x):
+        x0 = self.in_conv(x)
+        x1 = self.down_conv1(x0)
+        x2 = self.down_conv2(x1)
+        x3 = self.down_conv3(x2)
+        x4 = self.down_conv4(x3)
+        x5 = self.down_conv5(x4)
+
+        x6 = self.up_conv(1, x5, x4)
+        x7 = self.up_conv(2, x6, x3)
+        x8 = self.up_conv(3, x7, x2)
+        x9 = self.up_conv(4, x8, x1)
+        x10 = self.up_conv(5, x9, x0)
+
+        return x10[..., 12:-12, 12:-12]
+
+class KalmanFuser(nn.Module):
+    def __init__(self, Y, feat2d_dim=128, base_channels=32):
+        super().__init__()
+
+        self.base_channels = base_channels
+        self.feat2d_dim = feat2d_dim
+        # self.log_epsilon = -10
+        self.Y = Y
+
+        self.radar_feature_extractor = TinyUNet(16 * Y, base_channels=base_channels)
+        # self.camera_feature_extractor = nn.Conv2d(self.feat2d_dim*Y, base_channels, 1)
+        self.register_buffer('camera_feature_extractor', torch.randn(base_channels, self.feat2d_dim*Y, 1, 1) * 0.05)
+        # self.feat_to_init_state = nn.Conv2d(base_channels, base_channels*2, 1)
+        # self.init_mats = nn.Parameter(torch.randn(1, base_channels*2, 1, 1, requires_grad=True))
+        self.feat_to_mats = nn.Conv2d(base_channels, base_channels*2 + base_channels*4, 1)
+        self.feat_to_mats_camera = nn.Conv2d(base_channels, base_channels*2, 1)
+        self.z_to_radar = nn.Conv2d(base_channels, 16 * Y, 1)
+
+        for conv in [self.feat_to_mats, self.feat_to_mats_camera]:
+            conv.weight.data.normal_(std=1e-6)
+
+    def forward(self, feat_bev_, metarad_occ_mem0):
+        z_posteriors = []
+        z_priors = []
+        radar_mses = []
+
+        nsweeps = 3
+
+        for step in range(nsweeps):
+            with torch.no_grad():
+                mask = (metarad_occ_mem0[:,-1:] == (nsweeps - step))
+                radar_raw = (metarad_occ_mem0[:,:-1] * mask.float()).permute(0,1,3,2,4)
+                radar_raw = radar_raw.reshape(radar_raw.shape[0], -1, *radar_raw.shape[-2:])
+                mask = (torch.ones(1, device=metarad_occ_mem0.device, dtype=torch.bool).expand_as(metarad_occ_mem0[:,:-1]) & mask).permute(0,1,3,2,4)
+                mask = mask.reshape(mask.shape[0], -1, *mask.shape[-2:])
+            radar_feat = self.radar_feature_extractor(radar_raw)
+
+            if step == nsweeps-1:
+                camera = feat_bev_
+                camera_feat = F.conv2d(camera, self.camera_feature_extractor)
+
+            if step == 0:
+                s_init = (None, None)
+                _, _, F_curr, H_curr, logQ_curr, logR_curr = self.feat_to_mats(torch.zeros_like(radar_feat[..., :1, :1])).split([self.base_channels] * 6, dim=1)
+                F_curr = 1 + F_curr
+                mu = 0
+                var = 1
+                
+            pred_mu = F_curr * mu
+            pred_var = F_curr.square() * var + logQ_curr.exp()
+            res_var = H_curr.square() * pred_var + logR_curr.exp()
+            z_pred = H_curr * pred_mu
+            z_priors.append((z_pred, res_var.log()))
+
+            z_mean, z_logvar, F_next, H_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
+            F_next = 1 + F_next
+            z_posteriors.append((z_mean, z_logvar))
+
+            z_curr = torch.normal(z_mean, (0.5*z_logvar).exp()) if self.training else z_mean
+            radar_mses.append(
+                ((self.z_to_radar(z_curr) - radar_raw) * mask).square().mean(dim=(-1, -2)).view(-1, 16, self.Y)
+            )
+
+            residual = z_curr - z_pred
+            kalman_gain = pred_var * H_curr / res_var
+            mu = pred_mu + kalman_gain * residual
+            var = (1 - kalman_gain * H_curr) * pred_var
+
+            if step < nsweeps-1:
+                F_curr, H_curr, logQ_curr, logR_curr = F_next, H_next, logQ_next, logR_next
+            else:
+                H_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
+
+                camera_pred = H_cam_curr * mu
+                residual = camera_feat - camera_pred
+                res_var = H_cam_curr.square() * var + logR_cam_curr.exp()
+                camera_nll = residual.square()/(2*res_var)
+
+                kalman_gain = var * H_cam_curr / res_var
+                mu = mu + kalman_gain * residual
+                var = (1 - kalman_gain * H_curr) * var
+
+        sample = torch.normal(mu, (0.5*var).exp()) if self.training else mu
+
+        return sample, z_posteriors, z_priors, radar_mses, camera_nll, s_init
+
+
 class Segnet(nn.Module):
-    def __init__(self, Z, Y, X, vox_util=None, 
+    def __init__(self, Z, Y, X, vox_util=None,
                  use_radar=False,
                  use_lidar=False,
                  use_metaradar=False,
@@ -301,14 +485,14 @@ class Segnet(nn.Module):
         self.use_radar = use_radar
         self.use_lidar = use_lidar
         self.use_metaradar = use_metaradar
-        self.do_rgbcompress = do_rgbcompress   
+        self.do_rgbcompress = do_rgbcompress
         self.rand_flip = rand_flip
         self.latent_dim = latent_dim
         self.encoder_type = encoder_type
 
         self.mean = torch.as_tensor([0.485, 0.456, 0.406]).reshape(1,3,1,1).float().cuda()
         self.std = torch.as_tensor([0.229, 0.224, 0.225]).reshape(1,3,1,1).float().cuda()
-        
+
         # Encoder
         self.feat2d_dim = feat2d_dim = latent_dim
         if encoder_type == "res101":
@@ -324,8 +508,14 @@ class Segnet(nn.Module):
         # BEV compressor
         if self.use_radar:
             if self.use_metaradar:
+                # self.bev_compressor = nn.Sequential(
+                #     nn.Conv2d(feat2d_dim*Y + 16*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
+                #     nn.InstanceNorm2d(latent_dim),
+                #     nn.GELU(),
+                # )
+                self.kalman_fuser = KalmanFuser(Y, feat2d_dim=self.feat2d_dim, base_channels=32)
                 self.bev_compressor = nn.Sequential(
-                    nn.Conv2d(feat2d_dim*Y + 16*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
+                    nn.Conv2d(feat2d_dim*Y + self.kalman_fuser.base_channels, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
                     nn.InstanceNorm2d(latent_dim),
                     nn.GELU(),
                 )
@@ -363,7 +553,8 @@ class Segnet(nn.Module):
         self.ce_weight = nn.Parameter(torch.tensor(0.0), requires_grad=True)
         self.center_weight = nn.Parameter(torch.tensor(0.0), requires_grad=True)
         self.offset_weight = nn.Parameter(torch.tensor(0.0), requires_grad=True)
-            
+        self.radar_recon_weights = nn.Parameter(torch.zeros(1, 16, 1, requires_grad=True))
+
         # set_bn_momentum(self, 0.1)
 
         if vox_util is not None:
@@ -371,7 +562,7 @@ class Segnet(nn.Module):
             self.xyz_camA = vox_util.Mem2Ref(self.xyz_memA, Z, Y, X, assert_cube=False)
         else:
             self.xyz_camA = None
-        
+
     def forward(self, rgb_camXs, pix_T_cams, cam0_T_camXs, vox_util, rad_occ_mem0=None):
         '''
         B = batch size, S = number of cameras, C = 3, H = img height, W = img width
@@ -424,8 +615,13 @@ class Segnet(nn.Module):
             xyz_camA=xyz_camA)
         feat_mems = __u(feat_mems_) # B, S, C, Z, Y, X
 
-        mask_mems = (torch.abs(feat_mems) > 0).float()
-        feat_mem = utils.basic.reduce_masked_mean(feat_mems, mask_mems, dim=1) # B, C, Z, Y, X
+        # mask_mems = (torch.abs(feat_mems) > 0).float()
+        # feat_mem = utils.basic.reduce_masked_mean(feat_mems, mask_mems, dim=1) # B, C, Z, Y, X
+        with torch.no_grad():
+            mask_mems = (torch.abs(feat_mems.detach()) > 0).float()
+            mask_mems = mask_mems.sum(dim=1)
+            mask_mems += 1e-6
+        feat_mem = feat_mems.sum(dim=1) / mask_mems # B, C, Z, Y, X
 
         if self.rand_flip:
             self.bev_flip1_index = np.random.choice([0,1], B).astype(bool)
@@ -447,7 +643,7 @@ class Segnet(nn.Module):
                 feat_bev = self.bev_compressor(feat_bev_)
             else:
                 feat_bev_ = feat_mem.permute(0, 1, 3, 2, 4).reshape(B, self.feat2d_dim*Y, Z, X)
-                rad_bev_ = rad_occ_mem0.permute(0, 1, 3, 2, 4).reshape(B, 16*Y, Z, X)
+                rad_bev_, z_posteriors, z_priors, radar_mses, camera_nll, s_init = self.kalman_fuser(feat_bev_, rad_occ_mem0)
                 feat_bev_ = torch.cat([feat_bev_, rad_bev_], dim=1)
                 feat_bev = self.bev_compressor(feat_bev_)
         elif self.use_lidar:
@@ -472,5 +668,5 @@ class Segnet(nn.Module):
         center_e = out_dict['instance_center']
         offset_e = out_dict['instance_offset']
 
-        return raw_e, feat_e, seg_e, center_e, offset_e
+        return raw_e, feat_e, seg_e, center_e, offset_e, z_posteriors, z_priors, radar_mses, camera_nll, s_init
 

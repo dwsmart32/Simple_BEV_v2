@@ -26,7 +26,8 @@ def pack_seqdim(tensor, B):
     B_, S = shapelist[:2]
     assert(B==B_)
     otherdims = shapelist[2:]
-    tensor = torch.reshape(tensor, [B*S]+otherdims)
+    # tensor = torch.reshape(tensor, [B*S]+otherdims)
+    tensor = tensor.view([B*S]+otherdims)
     return tensor
 
 def unpack_seqdim(tensor, B):
@@ -35,7 +36,8 @@ def unpack_seqdim(tensor, B):
     assert(BS%B==0)
     otherdims = shapelist[1:]
     S = int(BS/B)
-    tensor = torch.reshape(tensor, [B,S]+otherdims)
+    # tensor = torch.reshape(tensor, [B,S]+otherdims)
+    tensor = tensor.view([B,S]+otherdims)
     return tensor
 
 def normalize_single(d):
