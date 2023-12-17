@@ -7,7 +7,8 @@ def compare_iou(true_file_path, false_file_path, output_top_file_path, output_do
 
     iou_differences = []
 
-    for true_line, false_line in zip(true_content, false_content):
+    for i, (true_line, false_line) in enumerate(zip(true_content, false_content)):
+
         true_parts = true_line.strip().split(', ')
         false_parts = false_line.strip().split(', ')
 

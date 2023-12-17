@@ -1300,3 +1300,4 @@ def compile_data(version, dataroot, data_aug_conf, centroid, bounds, res_3d, bsz
         pin_memory=False)
     print('data ready')
     return trainloader, valloader
+    #return valloader
