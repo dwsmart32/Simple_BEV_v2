@@ -116,19 +116,6 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     radar_data = radar_data[:,0]
     egopose = egopose[:,0]
 
-    # with torch.no_grad():
-    #     mean = torch.tensor([0, 0, 0, 1.6412247e+00,  5.0382824e+01,  8.1876965e+00,  1.2342781e+00,
-    #         6.6870111e-01, -6.6204011e-02, -1.3079891e-02,  1.0000000e+00,
-    #         3.0000000e+00,  1.9528118e+01,  1.9885292e+01,  0.0000000e+00,
-    #         1.0323220e+00,  1.6299629e+01,  3.0000000e+00,  1.4944004e-01, 0], dtype=torch.float, device=radar_data.device).view(1, -1, 1)
-
-    #     std = torch.tensor([1, 1, 1, 1.3189236 , 35.28537   ,  7.496517  ,  5.893061  ,  5.5774555 ,
-    #         1.429258  ,  0.39548367,  0.1       ,  0.1       ,  0.79458183,
-    #         1.2777594 ,  0.1       ,  0.25211594,  0.58270097,  0.1       ,
-    #         0.1103558, 1], dtype=torch.float, device=radar_data.device).view(1, -1, 1)
-
-    #     radar_data = (radar_data - mean) / std
-    
     origin_T_velo0t = egopose.to(device) # B,T,4,4
     lrtlist_velo = lrtlist_velo.to(device)
     scorelist = scorelist.to(device)
@@ -145,6 +132,23 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     rad_data = radar_data.to(device).permute(0, 2, 1) # B, R, 19
     xyz_rad = rad_data[:,:,:3]
     meta_rad = rad_data[:,:,3:]
+
+    with torch.no_grad():
+        meta_rad_discrete = {
+            'dyn_prop': meta_rad[:, :, 0].round().long(),
+            'is_quality_valid': meta_rad[:, :, 7].round().long(),
+            'ambig_state': meta_rad[:, :, 8].round().long(),
+            'invalid_state': meta_rad[:, :, 11].round().long(),
+            'pdh0': meta_rad[:, :, 12].round().long(),
+        }
+        meta_rad_continuous = torch.cat([meta_rad[:, :, 2:7], meta_rad[:, :, 9:11], meta_rad[:, :, 13:16]], dim=2)
+        meta_rad_continuous[:, :, :-1] /= 10 # HACK: hard-coded
+
+    meta_rad_embeds = [model.module.meta_rad_embeds[name](value) for name, value in meta_rad_discrete.items()]
+    meta_rad_proj = model.module.meta_rad_proj(meta_rad_continuous)
+    meta_rad_index = torch.arange(1, 1 + np.prod(meta_rad.shape[:2]), device=meta_rad.device).view(*meta_rad.shape[:2], 1)
+    meta_rad_mask = torch.any(meta_rad != 0, dim=2, keepdim=True).float()
+    meta_rad = torch.cat([sum(meta_rad_embeds + [meta_rad_proj]), meta_rad_index, meta_rad[:, :, 16:17]], dim=2) * meta_rad_mask
 
     B, S, C, H, W = rgb_camXs.shape
     B, V, D = xyz_velo0.shape
@@ -234,17 +238,52 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     total_loss += center_uncertainty_loss
     total_loss += offset_uncertainty_loss
     original_loss = total_loss
+    
+    nsweeps = 3 # HACK: hard-coded
+    radar_recon = torch.zeros(np.prod(meta_rad.shape[:2]), 15 + 2 + 5 + 18 + 8 + 10, device=meta_rad.device)
+    for step in range(nsweeps):
+        radar_recon_prescatter = model.module.meta_rad_decoder(radar_mses[step][1])
+        radar_index = radar_mses[step][0].round().long().unsqueeze(1).expand_as(radar_recon_prescatter)
+        radar_recon.scatter_(0, radar_index - 1, radar_recon_prescatter)
+    radar_recon = radar_recon.view(*meta_rad.shape[:2], -1)
 
-    radar_recon_loss = (sum(radar_mses) * (-model.module.radar_recon_weights).exp()).sum(dim=1).mean()
+    radar_recon_discrete = {
+        'dyn_prop': radar_recon[:, :, :15],
+        'is_quality_valid': radar_recon[:, :, 15:17],
+        'ambig_state': radar_recon[:, :, 17:22],
+        'invalid_state': radar_recon[:, :, 22:40],
+        'pdh0': radar_recon[:, :, 40:48],
+    }
+
+    radar_recon_losses = []
+    for name, recon_value in radar_recon_discrete.items():
+        radar_recon_losses.append(F.cross_entropy(recon_value.permute(0,2,1), meta_rad_discrete[name], reduction='none').unsqueeze(2))
+    radar_recon_losses.append(F.mse_loss(radar_recon[:, :, 48:], meta_rad_continuous, reduction='none'))
+    radar_recon_losses = torch.cat(radar_recon_losses, dim=2)
+
+    with torch.no_grad():
+        radar_recon_masks = (radar_recon != 0).any(dim=2, keepdim=True).float()
+        radar_recon_points = radar_recon_masks.sum(dim=(0, 1), keepdim=True)
+    radar_recon_losses = radar_recon_losses * radar_recon_masks
+
+    # if model.module.training:
+    #     momentum = 0.9
+    #     with torch.no_grad():
+    #         # radar_recon_loss_means = radar_recon_losses.detach().sum(dim=(0, 1), keepdim=True) / radar_recon_points
+    #         radar_recon_loss_means = radar_recon_losses.detach().view(-1, radar_recon_losses.size(2)).max(dim=0).values.view(1, 1, radar_recon_losses.size(2))
+    #         model.module.radar_recon_weights = model.module.radar_recon_weights * (1 - momentum) + radar_recon_loss_means.clamp(min=1) * momentum
+    # radar_recon_loss = (radar_recon_losses / model.module.radar_recon_weights).sum() / radar_recon_points
+    radar_recon_loss = radar_recon_losses.sum() / radar_recon_points
     camera_recon_loss = camera_nll.mean()
     # state_kld_loss = kl_divergence(Normal(s_init[0], s_init[1]), Normal(torch.zeros_like(s_init[0]), torch.ones_like(s_init[1]))).mean()
     # obser_kld_loss = sum([kl_divergence(Normal(z_posterior[0], z_posterior[1]), Normal(z_prior[0], z_prior[1])).mean() for z_posterior, z_prior in zip(z_posteriors, z_priors)])
     # state_kld_loss = (((2*s_init[1]).exp() + s_init[0].square())/2 - s_init[1] - 1/2).mean()
     # obser_kld_loss = sum([(((2*z_posterior[1]).exp() + (z_posterior[0] - z_prior[0]).square())/(2*(2*z_prior[1]).exp())).mean() + (z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
-    obser_kld_loss = sum([((z_posterior[1] + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1])).mean() + 0.5*(z_prior[1] / z_posterior[1]).log().mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+    # obser_kld_loss = sum([((z_posterior[1] + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1])).mean() + 0.5*(z_prior[1].log() - z_posterior[1].log()).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+    obser_kld_loss = sum([((z_posterior[1].exp() + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1].exp())).mean() + 0.5*(z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
 
     # total_loss = total_loss + 0.001 * radar_recon_loss + 0.0001 * (camera_recon_loss + state_kld_loss + obser_kld_loss)
-    total_loss = total_loss + 0.001 * radar_recon_loss + 0.001 * (camera_recon_loss + obser_kld_loss)
+    total_loss = total_loss + 0.1 * radar_recon_loss + 1.0 * (camera_recon_loss + obser_kld_loss)
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=[1,2,3])
@@ -424,9 +463,9 @@ def main(
     if init_dir:
         if load_step and load_optimizer:
             global_step = saverloader.load(init_dir, model.module, optimizer, ignore_load=ignore_load)
-            if use_scheduler:
-                for _ in range(global_step):
-                    scheduler.step()
+            # if use_scheduler:
+            #     for _ in range(global_step):
+            #         scheduler.step()
         elif load_step:
             global_step = saverloader.load(init_dir, model.module, ignore_load=ignore_load)
         else:
@@ -490,6 +529,7 @@ def main(
             total_loss, metrics = run_model(model, seg_loss_fn, sample, device, sw_t)
 
             total_loss.backward()
+            # print(model.module.kalman_fuser.z_to_radar[0].weight.grad)
         
         # if global_step % grad_acc == 0:
         torch.nn.utils.clip_grad_norm_(parameters, 5.0)
