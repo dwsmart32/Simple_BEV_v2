@@ -508,7 +508,7 @@ class KalmanFuser(nn.Module):
                 H_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
                 # logR_cam_curr = F.softplus(logR_cam_curr).log()
                 ## logR_cam_curr = torch.log1p(F.softplus(logR_cam_curr))
-                logR_cam_curr = F.softplus(logR_cam_curr)
+                logR_cam_curr = F.softplus(logR_cam_curr).log()
                 camera_pred = H_cam_curr * mu
                 residual = camera_feat - camera_pred
                 # res_var = H_cam_curr.square() * var + torch.exp(logR_cam_curr)
