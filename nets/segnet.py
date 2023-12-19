@@ -444,7 +444,7 @@ class KalmanFuser(nn.Module):
             if step == nsweeps-1:
                 camera = feat_bev_
                 # camera_feat = (F.conv2d(camera, self.camera_feature_extractor)) # TODO: no detach
-                camera_feat = self.camera_feature_extractor(camera)
+                camera_feat = self.camera_feature_extractor(camera.detach())
                 # camera_feat = self.camera_feature_norm(camera_feat)
 
             if step == 0:
@@ -453,8 +453,8 @@ class KalmanFuser(nn.Module):
                 F_curr = 1 + F_curr
                 # logQ_curr = F.softplus(logQ_curr).log()
                 # logR_curr = F.softplus(logR_curr).log()
-                logQ_curr = torch.log1p(F.softplus(logQ_curr))
-                logR_curr = torch.log1p(F.softplus(logR_curr))
+                logQ_curr = -F.softplus(logQ_curr)
+                logR_curr = -F.softplus(logR_curr)
                 mu = 0
                 # var = 1
                 var = 0
@@ -502,8 +502,8 @@ class KalmanFuser(nn.Module):
                 F_curr = 1 + F_curr
                 # logQ_curr = F.softplus(logQ_curr).log()
                 # logR_curr = F.softplus(logR_curr).log()
-                logQ_curr = torch.log1p(F.softplus(logQ_curr))
-                logR_curr = torch.log1p(F.softplus(logR_curr))
+                logQ_curr = -F.softplus(logQ_curr)
+                logR_curr = -F.softplus(logR_curr)
             else:
                 H_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
                 # logR_cam_curr = F.softplus(logR_cam_curr).log()
