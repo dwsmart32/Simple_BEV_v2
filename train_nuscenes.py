@@ -207,7 +207,8 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     lrtlist_cam0_g = lrtlist_cam0
 
-    _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e, z_posteriors, z_priors, radar_mses, camera_nll, s_init = model(
+    # _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e, z_posteriors, z_priors, radar_mses, camera_nll, s_init = model(
+    _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e, kalman_stats = model(
             rgb_camXs=rgb_camXs,
             pix_T_cams=pix_T_cams,
             cam0_T_camXs=cam0_T_camXs,
@@ -238,12 +239,18 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     total_loss += center_uncertainty_loss
     total_loss += offset_uncertainty_loss
     original_loss = total_loss
+
+    z_posteriors = kalman_stats['z_posteriors']
+    z_priors = kalman_stats['z_priors']
+    radar_recons = kalman_stats['radar_recons']
+    camera_nll = kalman_stats['camera_nll']
+    camera_kld_loss = kalman_stats['camera_kld_loss']
     
     nsweeps = 3 # HACK: hard-coded
     radar_recon = torch.zeros(np.prod(meta_rad.shape[:2]), 15 + 2 + 5 + 18 + 8 + 10, device=meta_rad.device)
     for step in range(nsweeps):
-        radar_recon_prescatter = model.module.meta_rad_decoder(radar_mses[step][1])
-        radar_index = radar_mses[step][0].round().long().unsqueeze(1).expand_as(radar_recon_prescatter)
+        radar_recon_prescatter = model.module.meta_rad_decoder(radar_recons[step][1])
+        radar_index = radar_recons[step][0].round().long().unsqueeze(1).expand_as(radar_recon_prescatter)
         radar_recon.scatter_(0, radar_index - 1, radar_recon_prescatter)
     radar_recon = radar_recon.view(*meta_rad.shape[:2], -1)
 
@@ -275,6 +282,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     # radar_recon_loss = (radar_recon_losses / model.module.radar_recon_weights).sum() / radar_recon_points
     radar_recon_loss = radar_recon_losses.sum() / radar_recon_points
     camera_recon_loss = camera_nll.mean()
+    camera_kld_loss = camera_kld_loss.mean()
     # state_kld_loss = kl_divergence(Normal(s_init[0], s_init[1]), Normal(torch.zeros_like(s_init[0]), torch.ones_like(s_init[1]))).mean()
     # obser_kld_loss = sum([kl_divergence(Normal(z_posterior[0], z_posterior[1]), Normal(z_prior[0], z_prior[1])).mean() for z_posterior, z_prior in zip(z_posteriors, z_priors)])
     # state_kld_loss = (((2*s_init[1]).exp() + s_init[0].square())/2 - s_init[1] - 1/2).mean()
@@ -283,7 +291,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     obser_kld_loss = sum([((z_posterior[1].exp() + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1].exp())).mean() + 0.5*(z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
 
     # total_loss = total_loss + 0.001 * radar_recon_loss + 0.0001 * (camera_recon_loss + state_kld_loss + obser_kld_loss)
-    total_loss = total_loss + 0.1 * radar_recon_loss + 1.0 * (camera_recon_loss + obser_kld_loss)
+    total_loss = total_loss + 0.1 * radar_recon_loss + 1.0 * (camera_recon_loss + obser_kld_loss + camera_kld_loss)
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=[1,2,3])
@@ -304,6 +312,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     metrics['camera_recon_loss'] = camera_recon_loss.item()
     # metrics['state_kld_loss'] = state_kld_loss.item()
     metrics['obser_kld_loss'] = obser_kld_loss.item()
+    metrics['camera_kld_loss'] = camera_kld_loss.item()
 
     if sw is not None and sw.save_this:
         # if model.module.use_radar or model.module.use_lidar:
@@ -575,6 +584,7 @@ def main(
         sw_t.summ_scalar('stats/radar_recon_loss', metrics['radar_recon_loss'])
         sw_t.summ_scalar('stats/camera_recon_loss', metrics['camera_recon_loss'])
         sw_t.summ_scalar('stats/obser_kld_loss', metrics['obser_kld_loss'])
+        sw_t.summ_scalar('stats/camera_kld_loss', metrics['camera_kld_loss'])
         if sw_t is not None and global_step % 50 == 0:
             with torch.no_grad():
                 # writer_t.add_scalars('stats/radar_recon_weights', metrics['radar_recon_weights'], global_step)
@@ -583,7 +593,7 @@ def main(
                     for stat in stats:
                         if stat == 'avg':
                             stat_func = torch.mean
-                        elif stat == 'std':
+                        elif stat == 'dev':
                             stat_func = torch.std
                         elif stat == 'max':
                             stat_func = torch.amax
@@ -596,19 +606,15 @@ def main(
                         writer_t.add_scalars(prefix + f'_{stat}', {f'dim{k}': v for k, v in enumerate(tensor_stat)}, global_step)
 
                 for step, (log_q, log_r) in enumerate(zip(model.module.kalman_fuser.log_qs[:2], model.module.kalman_fuser.log_rs[:2])):
-                    stats = ['avg', 'max', 'min']
-                    if step > 0:
-                        stats.append('std')
+                    stats = ['avg', 'dev', 'max', 'min'] if step > 0 else ['avg']
                     log_tensor_stats(f'tensor/step_{step}_log_q', log_q, stats, dim=(0,2,3))
                     log_tensor_stats(f'tensor/step_{step}_log_r', log_r, stats, dim=(0,2,3))
 
                 for step, log_var in enumerate(model.module.kalman_fuser.log_vars, start=1):
-                    stats = ['avg', 'max', 'min']
-                    if step > 0:
-                        stats.append('std')
-                    log_tensor_stats(f'tensor/step_{step}_log_var', log_var, ['avg', 'std', 'max', 'min'], dim=(0,2,3))
+                    stats = ['avg', 'dev', 'max', 'min'] if step > 1 else ['avg']
+                    log_tensor_stats(f'tensor/step_{step}_log_var', log_var, stats, dim=(0,2,3))
 
-                log_tensor_stats('tensor/cam_log_r', model.module.kalman_fuser.log_r_cam, ['avg', 'std', 'max', 'min'], dim=(0,2,3))
+                log_tensor_stats('tensor/cam_log_r', model.module.kalman_fuser.log_r_cam, ['avg', 'dev', 'max', 'min'], dim=(0,2,3))
 
         # run val
         if do_val and (global_step) % val_freq == 0:
