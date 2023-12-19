@@ -420,6 +420,12 @@ class KalmanFuser(nn.Module):
         z_priors = []
         radar_mses = []
 
+        # TODO: debug
+        self.log_vars = []
+        self.log_qs = []
+        self.log_rs = []
+        self.log_r_cam = None
+
         nsweeps = 3
 
         for step in range(nsweeps):
@@ -432,7 +438,7 @@ class KalmanFuser(nn.Module):
 
             if step == nsweeps-1:
                 camera = feat_bev_
-                camera_feat = (F.conv2d(camera, self.camera_feature_extractor))
+                camera_feat = (F.conv2d(camera.detach(), self.camera_feature_extractor)) # TODO: no detach
 
             if step == 0:
                 s_init = (None, None)
@@ -441,7 +447,7 @@ class KalmanFuser(nn.Module):
                 mu = 0
                 # var = 1
                 var = 0
-                
+
             pred_mu = F_curr * mu
             # pred_var = F_curr.square() * var + torch.exp(logQ_curr)
             # res_var = H_curr.square() * pred_var + torch.exp(logR_curr)
@@ -470,7 +476,12 @@ class KalmanFuser(nn.Module):
             # var = (1 - kalman_gain * H_curr) * pred_var
             kalman_gain = pred_var + logH_curr - res_var
             mu = pred_mu + kalman_gain.exp() * residual
-            var = torch.log1p(epsilon - (kalman_gain + logH_curr).exp()) + pred_var
+            var = torch.log1p(-(kalman_gain + logH_curr).exp()) + pred_var
+
+            # TODO: debug
+            self.log_qs.append(logQ_curr)
+            self.log_rs.append(logR_curr)
+            self.log_vars.append(var)
 
             if step < nsweeps-1:
                 F_curr, H_curr, logQ_curr, logR_curr = F_next, H_next, logQ_next, logR_next
@@ -490,7 +501,11 @@ class KalmanFuser(nn.Module):
                 # var = (1 - kalman_gain * H_curr) * var
                 kalman_gain = var + logH_cam_curr - res_var
                 mu = mu + kalman_gain.exp() * residual
-                var = torch.log1p(epsilon - (kalman_gain + logH_cam_curr).exp()) + var
+                var = torch.log1p(-(kalman_gain + logH_cam_curr).exp()) + var
+                
+                # TODO: debug
+                self.log_r_cam = logR_cam_curr
+                self.log_vars.append(var)
 
         # sample = self.reparameterize(mu, var=var) if self.training else mu
         sample = self.reparameterize(mu, logvar=var) if self.training else mu

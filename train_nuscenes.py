@@ -575,8 +575,40 @@ def main(
         sw_t.summ_scalar('stats/radar_recon_loss', metrics['radar_recon_loss'])
         sw_t.summ_scalar('stats/camera_recon_loss', metrics['camera_recon_loss'])
         sw_t.summ_scalar('stats/obser_kld_loss', metrics['obser_kld_loss'])
-        if sw_t is not None:
-            writer_t.add_scalars('stats/radar_recon_weights', metrics['radar_recon_weights'], global_step)
+        if sw_t is not None and global_step % 50 == 0:
+            with torch.no_grad():
+                # writer_t.add_scalars('stats/radar_recon_weights', metrics['radar_recon_weights'], global_step)
+
+                def log_tensor_stats(prefix, tensor, stats, dim):
+                    for stat in stats:
+                        if stat == 'avg':
+                            stat_func = torch.mean
+                        elif stat == 'std':
+                            stat_func = torch.std
+                        elif stat == 'max':
+                            stat_func = torch.amax
+                        elif stat == 'min':
+                            stat_func = torch.amin
+                        else:
+                            raise RuntimeError(f'unrecognized stat: \"{state}\"')
+
+                        tensor_stat = stat_func(tensor, dim=dim).detach().cpu().numpy()
+                        writer_t.add_scalars(prefix + f'_{stat}', {f'dim{k}': v for k, v in enumerate(tensor_stat)}, global_step)
+
+                for step, (log_q, log_r) in enumerate(zip(model.module.kalman_fuser.log_qs[:2], model.module.kalman_fuser.log_rs[:2])):
+                    stats = ['avg', 'max', 'min']
+                    if step > 0:
+                        stats.append('std')
+                    log_tensor_stats(f'tensor/step_{step}_log_q', log_q, stats, dim=(0,2,3))
+                    log_tensor_stats(f'tensor/step_{step}_log_r', log_r, stats, dim=(0,2,3))
+
+                for step, log_var in enumerate(model.module.kalman_fuser.log_vars, start=1):
+                    stats = ['avg', 'max', 'min']
+                    if step > 0:
+                        stats.append('std')
+                    log_tensor_stats(f'tensor/step_{step}_log_var', log_var, ['avg', 'std', 'max', 'min'], dim=(0,2,3))
+
+                log_tensor_stats('tensor/cam_log_r', model.module.kalman_fuser.log_r_cam, ['avg', 'std', 'max', 'min'], dim=(0,2,3))
 
         # run val
         if do_val and (global_step) % val_freq == 0:
