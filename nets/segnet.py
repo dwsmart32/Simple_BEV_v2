@@ -286,11 +286,12 @@ class Encoder_eff(nn.Module):
         return x
 
 class SparseInstanceNorm2d(nn.Module):
-    def __init__(self, num_features, eps=1e-5, momentum=0.1):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1, use_running_stats_in_eval=True):
         super(SparseInstanceNorm2d, self).__init__()
         self.num_features = num_features
         self.eps = eps
         self.momentum = momentum
+        self.use_running_stats_in_eval = use_running_stats_in_eval
 
         # Initialize running statistics for inference
         self.register_buffer('running_mean', torch.zeros(1, num_features, 1, 1))
@@ -298,24 +299,27 @@ class SparseInstanceNorm2d(nn.Module):
 
     def forward(self, x):
         with torch.no_grad():
-            is_non_zero = x.abs() > self.eps
+            is_non_zero = (x.abs() > self.eps).float()
 
-        if self.training:
+        use_running_stats = self.use_running_stats_in_eval and not self.training
+
+        if use_running_stats:
+            mean = self.running_mean
+            var = self.running_var
+        else:
             with torch.no_grad():
                 # Calculate mean and std only for non-zero elements
-                num_non_zero = is_non_zero.float().sum(dim=(2, 3), keepdim=True).clamp(min=1.0)
+                num_non_zero = is_non_zero.sum(dim=(2, 3), keepdim=True).clamp(min=1.0)
                 mean = x.sum(dim=(2, 3), keepdim=True) / num_non_zero
                 var = (x - mean).square().sum(dim=(2, 3), keepdim=True) / num_non_zero
 
-                # Update running statistics during training
-                self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * mean.mean(dim=0, keepdim=True)
-                self.running_var = (1 - self.momentum) * self.running_var + self.momentum * var.mean(dim=0, keepdim=True)
-        else:
-            mean = self.running_mean
-            var = self.running_var
+        if self.training:
+            # Update running statistics during training
+            self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * mean.mean(dim=0, keepdim=True)
+            self.running_var = (1 - self.momentum) * self.running_var + self.momentum * var.mean(dim=0, keepdim=True)
 
         # Normalize using mean and std
-        x = torch.where(is_non_zero, (x - mean) / torch.sqrt(var + self.eps), torch.zeros([], device=x.device).expand_as(x))
+        x = ((x - mean) / torch.sqrt(var + self.eps)) * is_non_zero
 
         return x
 
@@ -394,11 +398,12 @@ class KalmanFuser(nn.Module):
 
         self.radar_feature_extractor = TinyUNet(self.meta_rad_dim * Y, base_channels=base_channels)
         # self.register_buffer('camera_feature_extractor', torch.randn(base_channels, self.feat2d_dim*Y, 1, 1) * 1e-3)
-        self.camera_feature_extractor = nn.Sequential(
-            nn.Conv2d(self.feat2d_dim*Y, base_channels, 1, bias=True),
-            nn.Tanh(),
-            nn.Conv2d(base_channels, base_channels, 1, bias=True),
-        )
+        # self.camera_feature_extractor = nn.Sequential(
+        #     nn.Conv2d(self.feat2d_dim*Y, base_channels, 1, bias=True),
+        #     nn.Tanh(),
+        #     nn.Conv2d(base_channels, base_channels, 1, bias=True),
+        # )
+        self.camera_feature_extractor = nn.Conv2d(self.feat2d_dim*Y, base_channels, 1, bias=True)
         # self.camera_feature_norm = nn.InstanceNorm2d(base_channels, affine=False)
         self.feat_to_mats = nn.Conv2d(base_channels, base_channels*2 + base_channels*4, 1)
         self.feat_to_mats_camera = nn.Conv2d(base_channels, base_channels*2, 1)
@@ -452,13 +457,15 @@ class KalmanFuser(nn.Module):
                 # camera_feat = self.camera_feature_norm(camera_feat)
 
             if step == 0:
-                # s_init = (None, None)
-                _, _, F_curr, H_curr, logQ_curr, logR_curr = self.feat_to_mats(torch.zeros_like(radar_feat[..., :1, :1])).split([self.base_channels] * 6, dim=1)
-                F_curr = 1 + F_curr
+                # _, _, F_curr, H_curr, logQ_curr, logR_curr = self.feat_to_mats(torch.zeros_like(radar_feat[..., :1, :1])).split([self.base_channels] * 6, dim=1)
+                # F_curr = 1 + F_curr
+                _, _, logF_curr, logH_curr, logQ_curr, logR_curr = self.feat_to_mats(torch.zeros_like(radar_feat[..., :1, :1])).split([self.base_channels] * 6, dim=1)
+                F_curr = logF_curr.exp()
+                H_curr = logH_curr.exp()
                 # logQ_curr = F.softplus(logQ_curr).log()
                 # logR_curr = F.softplus(logR_curr).log()
-                logQ_curr = -F.softplus(logQ_curr)
-                logR_curr = -F.softplus(logR_curr)
+                # # logQ_curr = -F.softplus(logQ_curr)
+                # # logR_curr = -F.softplus(logR_curr)
                 mu = 0
                 # var = 1
                 var = 0
@@ -466,15 +473,16 @@ class KalmanFuser(nn.Module):
             pred_mu = F_curr * mu
             # pred_var = F_curr.square() * var + torch.exp(logQ_curr)
             # res_var = H_curr.square() * pred_var + torch.exp(logR_curr)
-            logF_curr = F_curr.abs().log()
-            logH_curr = (H_curr.abs() + epsilon).log()
+            ## logF_curr = F_curr.abs().log()
+            ## logH_curr = (H_curr.abs() + epsilon).log()
             pred_var = torch.logaddexp(2*logF_curr + var, logQ_curr)
             res_var = torch.logaddexp(2*logH_curr + pred_var, logR_curr)
             z_pred = H_curr * pred_mu
             z_priors.append((z_pred, res_var))
 
-            z_mean, z_logvar, F_next, H_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
-            z_logvar = -F.softplus(z_logvar)
+            # z_mean, z_logvar, F_next, H_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
+            z_mean, z_logvar, logF_next, logH_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
+            # # z_logvar = -F.softplus(z_logvar)
             # z_posteriors.append((z_mean, torch.exp(z_logvar)))
             z_posteriors.append((z_mean, z_logvar))
 
@@ -503,24 +511,31 @@ class KalmanFuser(nn.Module):
             self.log_vars.append(var)
 
             if step < nsweeps-1:
-                F_curr, H_curr, logQ_curr, logR_curr = F_next, H_next, logQ_next, logR_next
-                F_curr = 1 + F_curr
+                # F_curr, H_curr, logQ_curr, logR_curr = F_next, H_next, logQ_next, logR_next
+                # F_curr = 1 + F_curr
+                logF_curr, logH_curr, logQ_curr, logR_curr = logF_next, logH_next, logQ_next, logR_next
+                F_curr = logF_curr.exp()
+                H_curr = logH_curr.exp()
                 # logQ_curr = F.softplus(logQ_curr).log()
                 # logR_curr = F.softplus(logR_curr).log()
-                logQ_curr = -F.softplus(logQ_curr)
-                logR_curr = -F.softplus(logR_curr)
+                # # logQ_curr = -F.softplus(logQ_curr)
+                # # logR_curr = -F.softplus(logR_curr)
             else:
-                H_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
+                # H_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
+                logH_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
+                H_cam_curr = logH_cam_curr.exp()
+                # # logR_cam_curr = -F.softplus(logR_cam_curr)
                 # logR_cam_curr = F.softplus(logR_cam_curr).log()
                 ## logR_cam_curr = torch.log1p(F.softplus(logR_cam_curr))
                 camera_pred = H_cam_curr * mu
                 residual = camera_feat - camera_pred
                 # res_var = H_cam_curr.square() * var + torch.exp(logR_cam_curr)
                 # camera_nll = residual.square()/(2*res_var)
-                logH_cam_curr = (H_cam_curr.abs() + epsilon).log()
+                ## logH_cam_curr = (H_cam_curr.abs() + epsilon).log()
                 res_var = torch.logaddexp(2*logH_cam_curr + var, logR_cam_curr)
-                camera_nll = residual.square()/(2*res_var.exp()).detach()
-                camera_kld_loss = 0.5 * (logR_cam_curr.exp() - logR_cam_curr - 1).detach()
+                # camera_kld_loss = 0.5 * (logR_cam_curr.exp() - logR_cam_curr - 1)
+                camera_nll = residual.square()/(2*res_var.exp())
+                camera_kld_loss = torch.zeros([], device=logR_cam_curr.device)
 
                 # kalman_gain = var * H_cam_curr / res_var
                 # mu = mu + kalman_gain * residual
@@ -528,11 +543,9 @@ class KalmanFuser(nn.Module):
                 ## kalman_gain = var + logH_cam_curr - res_var
                 ## mu = mu + kalman_gain.exp() * residual
                 ## var = torch.log1p(epsilon - (kalman_gain + logH_cam_curr).exp()) + var
-
-                # TODO: tmp
-                # pseudo_kalman_gain = var + logH_cam_curr - logR_cam_curr
-                # mu = mu + residual / (H_cam_curr + (-pseudo_kalman_gain).exp())
-                # var = var - torch.log1p((logH_cam_curr + pseudo_kalman_gain).exp())
+                pseudo_kalman_gain = var + logH_cam_curr - logR_cam_curr
+                mu = mu + residual / (H_cam_curr + (-pseudo_kalman_gain).exp())
+                var = var - torch.log1p((logH_cam_curr + pseudo_kalman_gain).exp())
                 
                 # TODO: debug
                 self.log_r_cam = logR_cam_curr
