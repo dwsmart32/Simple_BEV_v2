@@ -329,7 +329,7 @@ class Tab_Segnet(nn.Module):
         if self.use_radar:
             if self.use_metaradar:
                 self.bev_compressor = nn.Sequential(
-                    nn.Conv2d(feat2d_dim*Y + 4*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
+                    nn.Conv2d(feat2d_dim*Y + 8*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
                     nn.InstanceNorm2d(latent_dim),
                     nn.GELU(),
                 )
@@ -381,7 +381,7 @@ class Tab_Segnet(nn.Module):
             # tuple containing the number of unique values within each category
             num_continuous = 13,                #
             dim = 16,                           # dimension, paper set at 32
-            dim_out = 4,                        # binary prediction, but could be anything
+            dim_out = 8,                        # binary prediction, but could be anything
             depth = 6,                          # depth, paper recommended 6
             heads = 8,                          # heads, paper recommends 8
             attn_dropout = 0.1,                 # post-attention dropout
@@ -491,7 +491,7 @@ class Tab_Segnet(nn.Module):
                 feat_bev = self.bev_compressor(feat_bev_)
             else:
                 feat_bev_ = feat_mem.permute(0, 1, 3, 2, 4).reshape(B, self.feat2d_dim*Y, Z, X)
-                rad_bev_ = rad_occ_mem0.permute(0, 1, 3, 2, 4).reshape(B, 4*Y, Z, X)
+                rad_bev_ = rad_occ_mem0.permute(0, 1, 3, 2, 4).reshape(B, 8*Y, Z, X)
                 #rad_bev_ = torch.sum(rad_bev_, 1).reshape(B, 1, Z, X) 
                 #rad_bev_check_Y_axis = torch.squeeze(torch.sum(rad_bev_, (2, 3)))
                 # print("check in Y's perspectives shape", rad_bev_check_Y_axis.shape)
