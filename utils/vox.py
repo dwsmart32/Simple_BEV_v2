@@ -140,9 +140,10 @@ class Vox_util(object):
     def voxelize_xyz_and_feats(self, xyz_ref, feats, Z, Y, X, already_mem=False, assert_cube=False, clean_eps=0):
         B, N, D = list(xyz_ref.shape)
         B2, N2, D2 = list(feats.shape)
+
         assert(D==3)
-        assert(B==B2)
-        assert(N==N2)
+        assert(B==B2), f'B={B}, B2={B2}'
+        assert(N==N2), f'N={N}, N2={N2}'
         if already_mem:
             xyz_mem = xyz_ref
         else:
@@ -351,7 +352,7 @@ class Vox_util(object):
         # this resamples the so that each C-dim pixel in rgb_tilB
         # is put into its correct place in the voxelgrid
         # (using the pinhole camera model)
-        
+
         B, C, D, H, W = list(rgb_tileB.shape)
 
         xyz_memA = utils.basic.gridcloud3d(B, Z, Y, X, norm=False, device=pixB_T_camA.device)
@@ -387,7 +388,7 @@ class Vox_util(object):
         values = torch.reshape(values, (B, C, Z, Y, X))
         values = values * valid_mem
         return values
-    
+
 
     def apply_mem_T_ref_to_lrtlist(self, lrtlist_cam, Z, Y, X, assert_cube=False):
         # lrtlist is B x N x 19, in cam coordinates
@@ -410,7 +411,7 @@ class Vox_util(object):
             # note the default stack is on -1
             grid = torch.stack([grid_x, grid_y, grid_z], dim=1)
             # this is B x 3 x Z x Y x X
-            
+
         xyz = xyz.reshape(B, N, 3, 1, 1, 1)
         grid = grid.reshape(B, 1, 3, Z, Y, X)
         # this is B x N x Z x Y x X
@@ -487,14 +488,14 @@ class Vox_util(object):
         mask = torch.exp(-dist_grid/(2*radius*radius))
         # zero out near zero
         mask[mask < 0.001] = 0.0
-        
+
         # add a Y dim
         mask = mask.unsqueeze(-2)
         off = off.unsqueeze(-2)
         # # B,N,2,Z,1,X
-        
+
         if also_offset:
             return mask, off
         else:
             return mask
-        
+

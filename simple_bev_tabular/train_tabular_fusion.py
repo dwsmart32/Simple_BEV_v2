@@ -2,6 +2,8 @@ import os
 import time
 import argparse
 import numpy as np
+import sys
+sys.path.insert(0, '/gallery_uffizi/dongwook.lee/simple_bev')  # 맨 앞에 추가
 import saverloader
 from fire import Fire
 from nets.segnet import Segnet
@@ -9,7 +11,7 @@ import utils.misc
 import utils.improc
 import utils.vox
 import random
-import nuscenesdataset 
+import nuscenesdataset
 import torch
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -45,7 +47,7 @@ Z, Y, X = 200, 8, 200
 def requires_grad(parameters, flag=True):
     for p in parameters:
         p.requires_grad = flag
-        
+
 def fetch_optimizer(lr, wdecay, epsilon, num_steps, params):
     """ Create the optimizer and learning rate scheduler """
     optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=wdecay, eps=epsilon)
@@ -75,7 +77,7 @@ def balanced_mse_loss(pred, gt, valid=None):
     neg_loss = utils.basic.reduce_masked_mean(mse_loss, neg_mask*valid)
     loss = (pos_loss + neg_loss)*0.5
     return loss
-    
+
 def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     metrics = {}
     total_loss = torch.tensor(0.0, requires_grad=True).to(device)
@@ -104,7 +106,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     offset_bev_g = offset_bev_g[:,0]
     radar_data = radar_data[:,0]
     egopose = egopose[:,0]
-    
+
     origin_T_velo0t = egopose.to(device) # B,T,4,4
     lrtlist_velo = lrtlist_velo.to(device)
     scorelist = scorelist.to(device)
@@ -139,12 +141,12 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     velo_T_cams = utils.geom.merge_rtlist(rots, trans).to(device)
     cams_T_velo = __u(utils.geom.safe_inverse(__p(velo_T_cams)))
-    
+
     cam0_T_camXs = utils.geom.get_camM_T_camXs(velo_T_cams, ind=0)
     camXs_T_cam0 = __u(utils.geom.safe_inverse(__p(cam0_T_camXs)))
     cam0_T_camXs_ = __p(cam0_T_camXs)
     camXs_T_cam0_ = __p(camXs_T_cam0)
-    
+
     xyz_cam0 = utils.geom.apply_4x4(cams_T_velo[:,0], xyz_velo0)
     rad_xyz_cam0 = utils.geom.apply_4x4(cams_T_velo[:,0], xyz_rad)
 
@@ -155,14 +157,14 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
         scene_centroid=scene_centroid.to(device),
         bounds=bounds,
         assert_cube=False)
-    
+
     V = xyz_velo0.shape[1]
 
 
 ############################Tab model processiong#####################
 
     # Tab_model = RadarTabTransformer(
-    #     categories = (10, 5, 6, 5), # dyn_prop / is_quality_valid / ambig_state / invalid_state     
+    #     categories = (10, 5, 6, 5), # dyn_prop / is_quality_valid / ambig_state / invalid_state
     #     # tuple containing the number of unique values within each category
     #     num_continuous = 14,                #
     #     dim = 16,                           # dimension, paper set at 32
@@ -173,14 +175,14 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     #     ff_dropout = 0.1,                   # feed forward dropout
     #     mlp_hidden_mults = (4, 2),          # relative multiples of each hidden dimension of the last mlp to logits
     #     mlp_act = nn.ReLU(),                # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-    #     continuous_mean_std = None, 
+    #     continuous_mean_std = None,
     #     shared_categ_dim_divisor = 4
     #     # (optional) - normalize the continuous values before layer norm
     # )
 
     # x_categ = torch.randint(0, 5, (1, 4))     # category values, from 0 - max number of categories, in the order as passed into the constructor above
     # x_cont = torch.randn(1, 14)               # assume continuous values are already normalized individually
-    
+
     # Tab_model = Tab_model.to(device)
     # Tab_model = torch.nn.DataParallel(Tab_model, device_ids=[0,1])
 
@@ -190,12 +192,12 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     # else:
     #     optimizer = torch.optim.Adam(Tab_model.parameters, lr=lr, weight_decay=weight_decay)
     # total_params = sum(p.numel() for p in Tab_model.parameters() if p.requires_grad)
-    # print('total_params', total_params) 
+    # print('total_params', total_params)
     # x_categ = torch.cat((rad_data[:,:,3:4], rad_data[:,:,10:12], rad_data[:,:,14:16]), dim=2).to(torch.int64)
     # x_cont = torch.cat((rad_data[:,:,:3], rad_data[:,:,5:10], rad_data[:,:,12:14], rad_data[:,:,16:]), dim=2)
 
     # pred = torch.zeros((rad_data.shape[0], rad_data.shape[1], 4))
-    
+
     # for i in range(0, rad_data.shape[0]):
     #     pred[i, :, :] = Tab_model(x_categ[i], x_cont[i])
 ######################################################################
@@ -220,15 +222,15 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     cam0_T_camXs = cam0_T_camXs
 
     lrtlist_cam0_g = lrtlist_cam0
-    
+
 #################################################################################
     _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e = model(
             rgb_camXs=rgb_camXs,
             pix_T_cams=pix_T_cams,
             cam0_T_camXs=cam0_T_camXs,
             vox_util=vox_util,
-            rad_data_1 = rad_data, 
-            rad_data_2 = rad_xyz_cam0, 
+            rad_data_1 = rad_data,
+            rad_data_2 = rad_xyz_cam0,
             device = device)
 ##################################################################################
 
@@ -277,7 +279,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
         sw.summ_oned('2_outputs/feat_bev_e', torch.mean(feat_bev_e, dim=1, keepdim=True))
         # sw.summ_oned('2_outputs/feat_bev_e', torch.max(feat_bev_e, dim=1, keepdim=True)[0])
-        
+
         sw.summ_oned('2_outputs/seg_bev_g', seg_bev_g * (0.5+valid_bev_g*0.5), norm=False)
         sw.summ_oned('2_outputs/valid_bev_g', valid_bev_g, norm=False)
         sw.summ_oned('2_outputs/seg_bev_e', torch.sigmoid(seg_bev_e).round(), norm=False, frame_id=iou.item())
@@ -288,9 +290,9 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
         sw.summ_flow('2_outputs/offset_bev_e', offset_bev_e, clip=10)
         sw.summ_flow('2_outputs/offset_bev_g', offset_bev_g, clip=10)
-        
+
     return total_loss, metrics
-    
+
 def main(
         exp_name='debug',
         # training
@@ -349,13 +351,13 @@ def main(
     model_name += "_%s" % lrn
     if use_scheduler:
         model_name += "s"
-    model_name += "_%s" % exp_name 
+    model_name += "_%s" % exp_name
     import datetime
     model_date = datetime.datetime.now().strftime('%H:%M:%S')
     model_name = model_name + '_' + model_date
     print('model_name', model_name)
 
-    # set up ckpt and logging 
+    # set up ckpt and logging
     ckpt_dir = os.path.join(ckpt_dir, model_name)
     writer_t = SummaryWriter(os.path.join(log_dir, model_name + '/t'), max_queue=10, flush_secs=60)
     if do_val:
@@ -371,7 +373,7 @@ def main(
     else:
         resize_lim = [1.0,1.0]
         crop_offset = 0
-    
+
     data_aug_conf = {
         'crop_offset': crop_offset,
         'resize_lim': resize_lim,
@@ -409,7 +411,7 @@ def main(
     # set up model & seg loss
     seg_loss_fn = SimpleLoss(2.13).to(device) # value from lift-splat
     model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, rand_flip=rand_flip)
-    
+
     model = model.to(device)
     model = torch.nn.DataParallel(model, device_ids=device_ids)
     parameters = list(model.parameters())
@@ -457,7 +459,7 @@ def main(
 
         iter_start_time = time.time()
         iter_read_time = 0.0
-        
+
         for internal_step in range(grad_acc):
             # read sample
             read_start_time = time.time()
@@ -468,7 +470,9 @@ def main(
                     global_step=global_step,
                     log_freq=log_freq,
                     fps=2,
-                    scalar_freq=int(1),
+                    # scalar_freq=int(log_freq/2),
+                    scalar_freq=1,
+
                     just_gif=True)
             else:
                 sw_t = None
@@ -487,7 +491,7 @@ def main(
             total_loss, metrics = run_model(model, seg_loss_fn, sample, device, sw_t)
 
             total_loss.backward()
-        
+
         # if global_step % grad_acc == 0:
         torch.nn.utils.clip_grad_norm_(parameters, 5.0)
         optimizer.step()
@@ -507,11 +511,11 @@ def main(
         ce_pool_t.update([metrics['ce_loss']])
         sw_t.summ_scalar('pooled/ce_loss', ce_pool_t.mean())
         sw_t.summ_scalar('stats/ce_loss', metrics['ce_loss'])
-        
+
         ce_weight_pool_t.update([metrics['ce_weight']])
         sw_t.summ_scalar('pooled/ce_weight', ce_weight_pool_t.mean())
         sw_t.summ_scalar('stats/ce_weight', metrics['ce_weight'])
-        
+
         center_pool_t.update([metrics['center_loss']])
         sw_t.summ_scalar('pooled/center_loss', center_pool_t.mean())
         sw_t.summ_scalar('stats/center_loss', metrics['center_loss'])
@@ -519,7 +523,7 @@ def main(
         center_weight_pool_t.update([metrics['center_weight']])
         sw_t.summ_scalar('pooled/center_weight', center_weight_pool_t.mean())
         sw_t.summ_scalar('stats/center_weight', metrics['center_weight'])
-        
+
         offset_pool_t.update([metrics['offset_loss']])
         sw_t.summ_scalar('pooled/offset_loss', offset_pool_t.mean())
         sw_t.summ_scalar('stats/offset_loss', metrics['offset_loss'])
@@ -537,14 +541,15 @@ def main(
                 global_step=global_step,
                 log_freq=log_freq,
                 fps=5,
-                scalar_freq=int(log_freq/2),
+                # scalar_freq=int(log_freq/2),
+                scalar_freq=1,
                 just_gif=True)
             try:
                 sample = next(val_iterloader)
             except StopIteration:
                 val_iterloader = iter(val_dataloader)
                 sample = next(val_iterloader)
-                
+
             with torch.no_grad():
                 total_loss, metrics = run_model(model, seg_loss_fn, sample, device, sw_v)
 
@@ -566,15 +571,15 @@ def main(
             sw_v.summ_scalar('pooled/offset_loss', offset_pool_v.mean())
 
             model.train()
-        
+
         # save model checkpoint
         if np.mod(global_step, save_freq)==0:
             saverloader.save(ckpt_dir, optimizer, model.module, global_step, keep_latest=keep_latest)
-        
+
         # log lr and time
         current_lr = optimizer.param_groups[0]['lr']
         sw_t.summ_scalar('_/current_lr', current_lr)
-        
+
         iter_time = time.time()-iter_start_time
         time_pool_t.update([iter_time])
         sw_t.summ_scalar('pooled/time_per_batch', time_pool_t.mean())
@@ -588,11 +593,11 @@ def main(
             print('%s; step %06d/%d; rtime %.2f; itime %.2f; loss %.5f; iou_t %.1f' % (
                 model_name, global_step, max_iters, iter_read_time, iter_time,
                 total_loss.item(), 100*iou_pool_t.mean()))
-            
+
     writer_t.close()
     if do_val:
         writer_v.close()
-            
+
 
 if __name__ == '__main__':
     Fire(main)
