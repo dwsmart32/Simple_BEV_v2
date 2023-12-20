@@ -468,7 +468,7 @@ def main(
                     global_step=global_step,
                     log_freq=log_freq,
                     fps=2,
-                    scalar_freq=int(log_freq/2),
+                    scalar_freq=int(1),
                     just_gif=True)
             else:
                 sw_t = None
