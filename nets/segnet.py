@@ -394,7 +394,11 @@ class KalmanFuser(nn.Module):
 
         self.radar_feature_extractor = TinyUNet(self.meta_rad_dim * Y, base_channels=base_channels)
         # self.register_buffer('camera_feature_extractor', torch.randn(base_channels, self.feat2d_dim*Y, 1, 1) * 1e-3)
-        self.camera_feature_extractor = nn.Conv2d(self.feat2d_dim*Y, base_channels, 1, bias=True)
+        self.camera_feature_extractor = nn.Sequential(
+            nn.Conv2d(self.feat2d_dim*Y, base_channels, 1, bias=True),
+            nn.Tanh(),
+            nn.Conv2d(base_channels, base_channels, 1, bias=True),
+        )
         # self.camera_feature_norm = nn.InstanceNorm2d(base_channels, affine=False)
         self.feat_to_mats = nn.Conv2d(base_channels, base_channels*2 + base_channels*4, 1)
         self.feat_to_mats_camera = nn.Conv2d(base_channels, base_channels*2, 1)
@@ -513,14 +517,9 @@ class KalmanFuser(nn.Module):
                 # res_var = H_cam_curr.square() * var + torch.exp(logR_cam_curr)
                 # camera_nll = residual.square()/(2*res_var)
                 logH_cam_curr = (H_cam_curr.abs() + epsilon).log()
-                
-                perfect_res_var = 2*logH_cam_curr + var
-                res_var = torch.logaddexp(perfect_res_var, logR_cam_curr)
+                res_var = torch.logaddexp(2*logH_cam_curr + var, logR_cam_curr)
                 camera_nll = residual.square()/(2*res_var.exp())
-
-                prior_res_var = torch.log1p(perfect_res_var.exp())
-                res_var_discrepancy = prior_res_var - logR_cam_curr
-                camera_kld_loss = 0.5 * (res_var_discrepancy + (-res_var_discrepancy).exp() - 1)
+                camera_kld_loss = 0.5 * (logR_cam_curr.exp() - logR_cam_curr - 1)
 
                 # kalman_gain = var * H_cam_curr / res_var
                 # mu = mu + kalman_gain * residual
