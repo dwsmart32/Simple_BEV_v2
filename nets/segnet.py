@@ -324,8 +324,8 @@ class TinyUNet(nn.Module):
         super().__init__()
 
         self.in_conv = nn.Sequential(
-            # nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=False),
-            nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=True),
+            nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=False),
+            # nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=True),
             nn.LeakyReLU(0.2, inplace=True)
         ) # (C, 224, 224)
 
@@ -343,10 +343,10 @@ class TinyUNet(nn.Module):
 
     def make_down_conv(self, in_channels, out_channels, padding=1):
         return nn.Sequential(
-            # nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=False),
-            # SparseInstanceNorm2d(out_channels),
+            nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=False),
+            SparseInstanceNorm2d(out_channels),
             # nn.InstanceNorm2d(out_channels),
-            nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=True),
+            # nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=True),
             nn.LeakyReLU(0.2, inplace=True)
         )
 
@@ -448,7 +448,7 @@ class KalmanFuser(nn.Module):
             if step == nsweeps-1:
                 camera = feat_bev_
                 # camera_feat = (F.conv2d(camera, self.camera_feature_extractor)) # TODO: no detach
-                camera_feat = self.camera_feature_extractor(camera.detach())
+                camera_feat = self.camera_feature_extractor(camera)
                 # camera_feat = self.camera_feature_norm(camera_feat)
 
             if step == 0:
@@ -474,6 +474,7 @@ class KalmanFuser(nn.Module):
             z_priors.append((z_pred, res_var))
 
             z_mean, z_logvar, F_next, H_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
+            z_logvar = -F.softplus(z_logvar)
             # z_posteriors.append((z_mean, torch.exp(z_logvar)))
             z_posteriors.append((z_mean, z_logvar))
 
@@ -518,8 +519,8 @@ class KalmanFuser(nn.Module):
                 # camera_nll = residual.square()/(2*res_var)
                 logH_cam_curr = (H_cam_curr.abs() + epsilon).log()
                 res_var = torch.logaddexp(2*logH_cam_curr + var, logR_cam_curr)
-                camera_nll = residual.square()/(2*res_var.exp())
-                camera_kld_loss = 0.5 * (logR_cam_curr.exp() - logR_cam_curr - 1)
+                camera_nll = residual.square()/(2*res_var.exp()).detach()
+                camera_kld_loss = 0.5 * (logR_cam_curr.exp() - logR_cam_curr - 1).detach()
 
                 # kalman_gain = var * H_cam_curr / res_var
                 # mu = mu + kalman_gain * residual
@@ -527,9 +528,11 @@ class KalmanFuser(nn.Module):
                 ## kalman_gain = var + logH_cam_curr - res_var
                 ## mu = mu + kalman_gain.exp() * residual
                 ## var = torch.log1p(epsilon - (kalman_gain + logH_cam_curr).exp()) + var
-                pseudo_kalman_gain = var + logH_cam_curr - logR_cam_curr
-                mu = mu + residual / (H_cam_curr + (-pseudo_kalman_gain).exp())
-                var = var - torch.log1p((logH_cam_curr + pseudo_kalman_gain).exp())
+
+                # TODO: tmp
+                # pseudo_kalman_gain = var + logH_cam_curr - logR_cam_curr
+                # mu = mu + residual / (H_cam_curr + (-pseudo_kalman_gain).exp())
+                # var = var - torch.log1p((logH_cam_curr + pseudo_kalman_gain).exp())
                 
                 # TODO: debug
                 self.log_r_cam = logR_cam_curr
