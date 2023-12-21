@@ -242,12 +242,21 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     lrtlist_cam0_g = lrtlist_cam0
 
-    _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e = model(
+    # _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e = model(
+    #         rgb_camXs=rgb_camXs,
+    #         pix_T_cams=pix_T_cams,
+    #         cam0_T_camXs=cam0_T_camXs,
+    #         vox_util=vox_util,
+    #         rad_occ_mem0=in_occ_mem0)
+
+      _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e = model(
             rgb_camXs=rgb_camXs,
             pix_T_cams=pix_T_cams,
             cam0_T_camXs=cam0_T_camXs,
             vox_util=vox_util,
-            rad_occ_mem0=in_occ_mem0)
+            radar_data_1=radar_data, 
+            radar_data_2=rad_xyz_cam0,
+            device=device)
 
     ce_loss = loss_fn(seg_bev_e, seg_bev_g, valid_bev_g)
     center_loss = balanced_mse_loss(center_bev_e, center_bev_g)
