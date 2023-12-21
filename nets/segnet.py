@@ -440,7 +440,7 @@ class KalmanFuser(nn.Module):
         self.log_rs = []
         self.log_r_cam = None
 
-        nsweeps = 3
+        nsweeps = 5
 
         for step in range(nsweeps):
             with torch.no_grad():
@@ -464,8 +464,8 @@ class KalmanFuser(nn.Module):
                 H_curr = logH_curr.exp()
                 # logQ_curr = F.softplus(logQ_curr).log()
                 # logR_curr = F.softplus(logR_curr).log()
-                # # logQ_curr = -F.softplus(logQ_curr)
-                # # logR_curr = -F.softplus(logR_curr)
+                logQ_curr = -F.softplus(logQ_curr)
+                logR_curr = -F.softplus(logR_curr)
                 mu = 0
                 # var = 1
                 var = 0
@@ -482,7 +482,7 @@ class KalmanFuser(nn.Module):
 
             # z_mean, z_logvar, F_next, H_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
             z_mean, z_logvar, logF_next, logH_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
-            # # z_logvar = -F.softplus(z_logvar)
+            z_logvar = -F.softplus(z_logvar)
             # z_posteriors.append((z_mean, torch.exp(z_logvar)))
             z_posteriors.append((z_mean, z_logvar))
 
@@ -518,13 +518,13 @@ class KalmanFuser(nn.Module):
                 H_curr = logH_curr.exp()
                 # logQ_curr = F.softplus(logQ_curr).log()
                 # logR_curr = F.softplus(logR_curr).log()
-                # # logQ_curr = -F.softplus(logQ_curr)
-                # # logR_curr = -F.softplus(logR_curr)
+                logQ_curr = -F.softplus(logQ_curr)
+                logR_curr = -F.softplus(logR_curr)
             else:
                 # H_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
                 logH_cam_curr, logR_cam_curr = self.feat_to_mats_camera(radar_feat).split([self.base_channels] * 2, dim=1)
                 H_cam_curr = logH_cam_curr.exp()
-                # # logR_cam_curr = -F.softplus(logR_cam_curr)
+                logR_cam_curr = -F.softplus(logR_cam_curr)
                 # logR_cam_curr = F.softplus(logR_cam_curr).log()
                 ## logR_cam_curr = torch.log1p(F.softplus(logR_cam_curr))
                 camera_pred = H_cam_curr * mu
