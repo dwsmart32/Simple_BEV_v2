@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 import saverloader
 from fire import Fire
-from simple_bev_tabular.nets.tab_segnet import Tab_Segnet
+from nets.tab_segnet import Tab_Segnet
 import utils.misc
 import utils.improc
 import utils.vox
@@ -87,7 +87,7 @@ def balanced_ce_loss(out, target, valid):
             total_loss += loss.mean()
             normalizer += 1
     return total_loss / normalizer
-
+    
 def balanced_occ_loss(pred, occ, free):
     pos = occ.clone()
     neg = free.clone()
@@ -134,7 +134,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     offset_bev_g = offset_bev_g[:,0]
     radar_data = radar_data[:,0]
     egopose = egopose[:,0]
-
+    
     origin_T_velo0t = egopose.to(device) # B,T,4,4
 
     lrtlist_velo = lrtlist_velo.to(device)
@@ -169,12 +169,12 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     velo_T_cams = utils.geom.merge_rtlist(rots, trans).to(device)
     cams_T_velo = __u(utils.geom.safe_inverse(__p(velo_T_cams)))
-
+    
     cam0_T_camXs = utils.geom.get_camM_T_camXs(velo_T_cams, ind=0)
     camXs_T_cam0 = __u(utils.geom.safe_inverse(__p(cam0_T_camXs)))
     cam0_T_camXs_ = __p(cam0_T_camXs)
     camXs_T_cam0_ = __p(camXs_T_cam0)
-
+    
     xyz_cam0 = utils.geom.apply_4x4(cams_T_velo[:,0], xyz_velo0)
     rad_xyz_cam0 = utils.geom.apply_4x4(cams_T_velo[:,0], xyz_rad)
 
@@ -185,7 +185,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
         scene_centroid=scene_centroid.to(device),
         bounds=bounds,
         assert_cube=False)
-
+    
     V = xyz_velo0.shape[1]
 
     occ_mem0 = vox_util.voxelize_xyz(xyz_cam0, Z, Y, X, assert_cube=False)
@@ -215,7 +215,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
             cam0_T_camXs=cam0_T_camXs,
             vox_util=vox_util,
             rad_data_1=rad_data,
-            rad_data_2=rad_xyz_cam0,
+            rad_data_2=rad_xyz_cam0, 
             device=device)
 
     ce_loss = loss_fn(seg_bev_e, seg_bev_g, valid_bev_g)
@@ -270,7 +270,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
         sw.summ_flow('2_outputs/offset_bev_g', offset_bev_g, clip=10)
 
     return total_loss, metrics
-
+    
 def main(
         exp_name='eval',
         # val/test
@@ -297,23 +297,16 @@ def main(
         do_rgbcompress=True,
         # cuda
         device_ids=[0,1],
-<<<<<<< HEAD:simple_bev_tabular/tabular_eval_nuscenes.py
         dim_feat=4, 
         depth=6, 
         head=8, 
         shared_divisor=8
-=======
-        dim_feat=4,
-        depth=6,
-        head=8,
-        dim_divisor=8
->>>>>>> 0879ed91a3abae76aeecc50f394a6b8460465490:tabular_eval_nuscenes.py
 ):
     B = batch_size
     assert(B % len(device_ids) == 0) # batch size must be divisible by number of gpus
 
     device = 'cuda:%d' % device_ids[0]
-
+    
     ## autogen a name
     model_name = "%s" % init_dir.split('/')[-1]
     model_name += "_%d" % B
@@ -329,7 +322,7 @@ def main(
     # set up dataloader
     final_dim = (int(224 * res_scale), int(400 * res_scale))
     print('resolution:', final_dim)
-
+    
     data_aug_conf = {
         'final_dim': final_dim,
         'cams': ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
@@ -360,16 +353,12 @@ def main(
         scene_centroid=scene_centroid.to(device),
         bounds=bounds,
         assert_cube=False)
-
+    
     max_iters = len(val_dataloader) # determine iters by length of dataset
 
     # set up model & seg loss
     seg_loss_fn = SimpleLoss(2.13).to(device)
-<<<<<<< HEAD:simple_bev_tabular/tabular_eval_nuscenes.py
     model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, dim_feat=dim_feat, depth=depth, head=head, shared_divisor=shared_divisor)
-=======
-    model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, dim_feat=dim_feat, depth=depth, head=head, shared_divisor=dim_divisor)
->>>>>>> 0879ed91a3abae76aeecc50f394a6b8460465490:tabular_eval_nuscenes.py
     model = model.to(device)
     model = torch.nn.DataParallel(model, device_ids=device_ids)
     parameters = list(model.parameters())
@@ -409,14 +398,14 @@ def main(
             scalar_freq=int(log_freq/2),
             just_gif=True)
         sw_ev.save_this = False
-
+        
         try:
             sample = next(val_iterloader)
         except StopIteration:
             break
 
         read_time = time.time()-read_start_time
-
+            
         with torch.no_grad():
             total_loss, metrics = run_model(model, seg_loss_fn, sample, device, sw_ev)
 
@@ -424,7 +413,7 @@ def main(
         union += metrics['union']
 
         sw_ev.summ_scalar('pooled/iou_ev', intersection/union)
-
+        
         loss_pool_ev.update([total_loss.item()])
         sw_ev.summ_scalar('pooled/total_loss', loss_pool_ev.mean())
         sw_ev.summ_scalar('stats/total_loss', total_loss.item())
@@ -432,7 +421,7 @@ def main(
         ce_pool_ev.update([metrics['ce_loss']])
         sw_ev.summ_scalar('pooled/ce_loss', ce_pool_ev.mean())
         sw_ev.summ_scalar('stats/ce_loss', metrics['ce_loss'])
-
+        
         center_pool_ev.update([metrics['center_loss']])
         sw_ev.summ_scalar('pooled/center_loss', center_pool_ev.mean())
         sw_ev.summ_scalar('stats/center_loss', metrics['center_loss'])
@@ -442,7 +431,7 @@ def main(
         sw_ev.summ_scalar('stats/offset_loss', metrics['offset_loss'])
 
         iter_time = time.time()-iter_start_time
-
+        
         time_pool_ev.update([iter_time])
         sw_ev.summ_scalar('pooled/time_per_batch', time_pool_ev.mean())
         sw_ev.summ_scalar('pooled/time_per_el', time_pool_ev.mean()/float(B))
@@ -451,9 +440,9 @@ def main(
             model_name, global_step, max_iters, read_time, iter_time, 1000*time_pool_ev.mean(),
             total_loss.item(), 100*intersection/union))
     print('final %s mean iou' % dset, 100*intersection/union)
-
+    
     writer_ev.close()
-
+            
 
 if __name__ == '__main__':
     Fire(main)
