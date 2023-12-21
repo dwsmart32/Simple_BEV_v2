@@ -14,7 +14,7 @@ from torchvision.models.resnet import resnet18
 from efficientnet_pytorch import EfficientNet
 
 import matplotlib.pyplot as plt
-from tab_transformer_pytorch import RadarTabTransformer
+from simple_bev_tabular.tab_transformer_pytorch import RadarTabTransformer
 
 
 EPS = 1e-4
@@ -290,7 +290,7 @@ class Encoder_eff(nn.Module):
         return x
 
 class Tab_Segnet(nn.Module):
-    def __init__(self, Z, Y, X, vox_util=None, 
+    def __init__(self, Z, Y, X, vox_util=None,
                  use_radar=False,
                  use_lidar=False,
                  use_metaradar=True,
@@ -305,14 +305,14 @@ class Tab_Segnet(nn.Module):
         self.use_radar = use_radar
         self.use_lidar = use_lidar
         self.use_metaradar = use_metaradar
-        self.do_rgbcompress = do_rgbcompress   
+        self.do_rgbcompress = do_rgbcompress
         self.rand_flip = rand_flip
         self.latent_dim = latent_dim
         self.encoder_type = encoder_type
 
         self.mean = torch.as_tensor([0.485, 0.456, 0.406]).reshape(1,3,1,1).float().cuda()
         self.std = torch.as_tensor([0.229, 0.224, 0.225]).reshape(1,3,1,1).float().cuda()
-        
+
         # Encoder
         self.feat2d_dim = feat2d_dim = latent_dim
         if encoder_type == "res101":
@@ -367,7 +367,7 @@ class Tab_Segnet(nn.Module):
         self.ce_weight = nn.Parameter(torch.tensor(0.0), requires_grad=True)
         self.center_weight = nn.Parameter(torch.tensor(0.0), requires_grad=True)
         self.offset_weight = nn.Parameter(torch.tensor(0.0), requires_grad=True)
-            
+
         # set_bn_momentum(self, 0.1)
 
         if vox_util is not None:
@@ -377,7 +377,7 @@ class Tab_Segnet(nn.Module):
             self.xyz_camA = None
 
         self.Tab_model = RadarTabTransformer(
-            categories = (8, 20, 5, 20, 8), # dyn_prop / is_quality_valid / ambig_state / invalid_state     
+            categories = (8, 20, 5, 20, 8), # dyn_prop / is_quality_valid / ambig_state / invalid_state
             # tuple containing the number of unique values within each category
             num_continuous = 13,                #
             dim = 16,                           # dimension, paper set at 32
@@ -388,12 +388,12 @@ class Tab_Segnet(nn.Module):
             ff_dropout = 0.1,                   # feed forward dropout
                 mlp_hidden_mults = (4, 2),          # relative multiples of each hidden dimension of the last mlp to logits
             mlp_act = nn.ReLU(),                # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-            continuous_mean_std = None, 
+            continuous_mean_std = None,
             shared_categ_dim_divisor = 8
             # (optional) - normalize the continuous values before layer norm
         )
-    
-        
+
+
     def forward(self, rgb_camXs, pix_T_cams, cam0_T_camXs, vox_util, rad_data_1, rad_data_2, device):
         '''
         B = batch size, S = number of cameras, C = 3, H = img height, W = img width
@@ -408,21 +408,21 @@ class Tab_Segnet(nn.Module):
             - (B, 1, Z, Y, X) when use_lidar = True
         '''
         ##############################################################################
-        
+
         #self.Tab_model = self.Tab_model.to(device)
         #self.Tab_model = torch.nn.DataParallel(self.Tab_model, device_ids=[0,1])
-        
+
         x_categ = torch.cat((rad_data_1[:,:,3:4], rad_data_1[:,:,10:12], rad_data_1[:,:,14:16]), dim=2).to(torch.int64)
         x_cont = torch.cat((rad_data_1[:,:,:3], rad_data_1[:,:,5:10], rad_data_1[:,:,12:14], rad_data_1[:,:,16:]), dim=2)
-    
+
         #pred = torch.zeros((rad_data_1.shape[0], rad_data_1.shape[1], 8))
         pred = torch.stack((self.Tab_model(x_categ[0], x_cont[0]),self.Tab_model(x_categ[1], x_cont[1])), dim=0)
         #pred = torch.cat((self.Tab_model(x_categ[0], x_cont[0]),self.Tab_model(x_categ[1], x_cont[1])), dim=0)
-                  
+
 #         for i in range(0, rad_data_1.shape[0]):
 #              pred[i, :, :] = self.Tab_model(x_categ[i], x_cont[i])
         #import ipdb; ipdb.set_trace()
-        pred = torch.stack([self.Tab_model(x_categ[0], x_cont[0]), self.Tab_model(x_categ[1], x_cont[1])])
+        # pred = torch.stack([self.Tab_model(x_categ[0], x_cont[0]), self.Tab_model(x_categ[1], x_cont[1])])
         # pred = torch.unsqueeze(self.Tab_model(x_categ[0], x_cont[0]), dim=0)
         #print("check shape :", self.Tab_model(x_categ[0], x_cont[0]).shape)
         rad_occ_mem0 = vox_util.voxelize_xyz_and_feats(rad_data_2, pred, self.Z, self.Y, self.X, assert_cube=False)
@@ -491,16 +491,18 @@ class Tab_Segnet(nn.Module):
                 feat_bev = self.bev_compressor(feat_bev_)
             else:
                 feat_bev_ = feat_mem.permute(0, 1, 3, 2, 4).reshape(B, self.feat2d_dim*Y, Z, X)
+
                 rad_bev_ = rad_occ_mem0.permute(0, 1, 3, 2, 4).reshape(B, 4*Y, Z, X)
-                #rad_bev_ = torch.sum(rad_bev_, 1).reshape(B, 1, Z, X) 
+                #rad_bev_ = torch.sum(rad_bev_, 1).reshape(B, 1, Z, X)
+
                 #rad_bev_check_Y_axis = torch.squeeze(torch.sum(rad_bev_, (2, 3)))
                 # print("check in Y's perspectives shape", rad_bev_check_Y_axis.shape)
                 # rad_bev_check_Y_axis = rad_bev_check_Y_axis.reshape(16, Y)
                 # print("check Y's value", rad_bev_check_Y_axis)
-                
+
                 # rad_bev_show_1 = (torch.squeeze(torch.sum(rad_bev_, 2))).cpu().numpy()
                 # rad_bev_show_2 = (torch.squeeze(torch.sum(rad_bev_, 1))).cpu().numpy()
-                
+
                 # fig = plt.figure()
                 # ax1 = fig.add_subplot(2,1,1)
                 # ax1.grid(False)

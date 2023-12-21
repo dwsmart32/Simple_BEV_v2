@@ -1,4 +1,5 @@
 import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 import io
 import time
 import imageio
@@ -6,7 +7,9 @@ import argparse
 import numpy as np
 import saverloader
 from fire import Fire
-from nets.tab_segnet import Tab_Segnet
+import sys
+sys.path.insert(0, '/gallery_uffizi/dongwook.lee/simple_bev')  # 맨 앞에 추가
+from simple_bev_tabular.nets.tab_segnet import Tab_Segnet
 import utils.misc
 import utils.improc
 import utils.vox
@@ -249,14 +252,14 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     #         vox_util=vox_util,
     #         rad_occ_mem0=in_occ_mem0)
 
-      _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e = model(
-            rgb_camXs=rgb_camXs,
-            pix_T_cams=pix_T_cams,
-            cam0_T_camXs=cam0_T_camXs,
-            vox_util=vox_util,
-            radar_data_1=radar_data, 
-            radar_data_2=rad_xyz_cam0,
-            device=device)
+    _, feat_bev_e, seg_bev_e, center_bev_e, offset_bev_e = model(
+        rgb_camXs=rgb_camXs,
+        pix_T_cams=pix_T_cams,
+        cam0_T_camXs=cam0_T_camXs,
+        vox_util=vox_util,
+        rad_data_1=radar_data,
+        rad_data_2=rad_xyz_cam0,
+        device=device)
 
     ce_loss = loss_fn(seg_bev_e, seg_bev_g, valid_bev_g)
     center_loss = balanced_mse_loss(center_bev_e, center_bev_g)
