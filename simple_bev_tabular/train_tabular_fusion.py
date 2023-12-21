@@ -334,7 +334,8 @@ def main(
         do_shuffle_cams=True,
         # cuda
         device_ids=[0,1],
-        idempotency=False # should be dir
+        idempotency=False # should be dir,
+        dim_feat=4
     ):
 
     B = batch_size
@@ -413,7 +414,7 @@ def main(
     seg_loss_fn = SimpleLoss(2.13).to(device) # value from lift-splat
 
 
-    model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, rand_flip=rand_flip)
+    model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, rand_flip=rand_flip, dim_feat=dim_feat)
 
 
 
