@@ -297,9 +297,12 @@ class Tab_Segnet(nn.Module):
                  do_rgbcompress=True,
                  rand_flip=False,
                  latent_dim=128,
-                 encoder_type="res101"):
+                 encoder_type="res101",
+                 dim_feat = 4):
         super(Tab_Segnet, self).__init__()
         assert (encoder_type in ["res101", "res50", "effb0", "effb4"])
+                     
+        self.dim_out = dim_feat
 
         self.Z, self.Y, self.X = Z, Y, X
         self.use_radar = use_radar
@@ -309,7 +312,7 @@ class Tab_Segnet(nn.Module):
         self.rand_flip = rand_flip
         self.latent_dim = latent_dim
         self.encoder_type = encoder_type
-
+        
         self.mean = torch.as_tensor([0.485, 0.456, 0.406]).reshape(1,3,1,1).float().cuda()
         self.std = torch.as_tensor([0.229, 0.224, 0.225]).reshape(1,3,1,1).float().cuda()
 
@@ -329,13 +332,13 @@ class Tab_Segnet(nn.Module):
         if self.use_radar:
             if self.use_metaradar:
                 self.bev_compressor = nn.Sequential(
-                    nn.Conv2d(feat2d_dim*Y + 4*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
+                    nn.Conv2d(feat2d_dim*Y + self.dim_out*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
                     nn.InstanceNorm2d(latent_dim),
                     nn.GELU(),
                 )
             else:
                 self.bev_compressor = nn.Sequential(
-                    nn.Conv2d(feat2d_dim*Y+4*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
+                    nn.Conv2d(feat2d_dim*Y+self.dim_out*Y, feat2d_dim, kernel_size=3, padding=1, stride=1, bias=False),
                     nn.InstanceNorm2d(latent_dim),
                     nn.GELU(),
                 )
@@ -375,13 +378,13 @@ class Tab_Segnet(nn.Module):
             self.xyz_camA = vox_util.Mem2Ref(self.xyz_memA, Z, Y, X, assert_cube=False)
         else:
             self.xyz_camA = None
-
+            
         self.Tab_model = RadarTabTransformer(
             categories = (8, 20, 5, 20, 8), # dyn_prop / is_quality_valid / ambig_state / invalid_state
             # tuple containing the number of unique values within each category
             num_continuous = 13,                #
             dim = 16,                           # dimension, paper set at 32
-            dim_out = 4,                        # binary prediction, but could be anything
+            dim_out = self.dim_out,                        # binary prediction, but could be anything
             depth = 6,                          # depth, paper recommended 6
             heads = 8,                          # heads, paper recommends 8
             attn_dropout = 0.1,                 # post-attention dropout
@@ -492,7 +495,7 @@ class Tab_Segnet(nn.Module):
             else:
                 feat_bev_ = feat_mem.permute(0, 1, 3, 2, 4).reshape(B, self.feat2d_dim*Y, Z, X)
 
-                rad_bev_ = rad_occ_mem0.permute(0, 1, 3, 2, 4).reshape(B, 4*Y, Z, X)
+                rad_bev_ = rad_occ_mem0.permute(0, 1, 3, 2, 4).reshape(B, self.dim_out*Y, Z, X)
                 #rad_bev_ = torch.sum(rad_bev_, 1).reshape(B, 1, Z, X)
 
                 #rad_bev_check_Y_axis = torch.squeeze(torch.sum(rad_bev_, (2, 3)))
