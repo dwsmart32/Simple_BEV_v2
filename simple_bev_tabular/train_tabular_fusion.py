@@ -334,12 +334,13 @@ def main(
         do_shuffle_cams=True,
         # cuda
         device_ids=[0,1],
-        idempotency=False # should be dir,
+        idempotency=False # should be dir
+        # tab_transformer_args
         dim_feat=4, 
         depth=6, 
         head=8, 
-        dim_divisor=8
-    ):
+        dim_divisor=8,
+):
 
     B = batch_size
     assert(B % len(device_ids) == 0) # batch size must be divisible by number of gpus
@@ -416,10 +417,7 @@ def main(
     # set up model & seg loss
     seg_loss_fn = SimpleLoss(2.13).to(device) # value from lift-splat
 
-
     model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, rand_flip=rand_flip, dim_feat=dim_feat, depth=depth, head=head, dim_divisor=dim_divisor)
-
-
 
     model = model.to(device)
     model = torch.nn.DataParallel(model, device_ids=device_ids)
