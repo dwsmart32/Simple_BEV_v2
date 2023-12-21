@@ -300,7 +300,7 @@ def main(
         dim_feat=4, 
         depth=6, 
         head=8, 
-        dim_divisor=8
+        shared_divisor=8
 ):
     B = batch_size
     assert(B % len(device_ids) == 0) # batch size must be divisible by number of gpus
@@ -358,7 +358,7 @@ def main(
 
     # set up model & seg loss
     seg_loss_fn = SimpleLoss(2.13).to(device)
-    model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, dim_feat=dim_feat, depth=depth, head=head, dim_divisor=dim_divisor)
+    model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, dim_feat=dim_feat, depth=depth, head=head, shared_divisor=shared_divisor)
     model = model.to(device)
     model = torch.nn.DataParallel(model, device_ids=device_ids)
     parameters = list(model.parameters())
