@@ -334,6 +334,7 @@ def main(
         do_shuffle_cams=True,
         # cuda
         device_ids=[0,1],
+        idempotency=False # should be dir
     ):
 
     B = batch_size
@@ -410,7 +411,11 @@ def main(
 
     # set up model & seg loss
     seg_loss_fn = SimpleLoss(2.13).to(device) # value from lift-splat
+
+
     model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type, rand_flip=rand_flip)
+
+
 
     model = model.to(device)
     model = torch.nn.DataParallel(model, device_ids=device_ids)
@@ -452,7 +457,9 @@ def main(
         ce_pool_v = utils.misc.SimplePool(n_pool, version='np')
         center_pool_v = utils.misc.SimplePool(n_pool, version='np')
         offset_pool_v = utils.misc.SimplePool(n_pool, version='np')
-
+    if init_dir and use_scheduler:
+        for _ in range(global_step):
+            scheduler.step()
     # training loop
     while global_step < max_iters:
         global_step += 1
@@ -494,9 +501,13 @@ def main(
 
         # if global_step % grad_acc == 0:
         torch.nn.utils.clip_grad_norm_(parameters, 5.0)
+        if init_dir:
+            optimizer.param_groups[0]['capturable'] = True
         optimizer.step()
         if use_scheduler:
             scheduler.step()
+
+
         optimizer.zero_grad()
 
         # update logging pools
