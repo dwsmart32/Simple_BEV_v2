@@ -6,7 +6,7 @@ import argparse
 import numpy as np
 import saverloader
 from fire import Fire
-from nets.segnet import Segnet
+from nets.tab_segnet import Tab_Segnet
 import utils.misc
 import utils.improc
 import utils.vox
@@ -402,7 +402,7 @@ def main(
 
     # set up model & seg loss
     seg_loss_fn = SimpleLoss(2.13).to(device)
-    model = Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type)
+    model = Tab_Segnet(Z, Y, X, vox_util, use_radar=use_radar, use_lidar=use_lidar, use_metaradar=use_metaradar, do_rgbcompress=do_rgbcompress, encoder_type=encoder_type)
     model = model.to(device)
     model = torch.nn.DataParallel(model, device_ids=device_ids)
     parameters = list(model.parameters())
