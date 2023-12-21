@@ -160,65 +160,6 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
 
     V = xyz_velo0.shape[1]
 
-
-############################Tab model processiong#####################
-
-    # Tab_model = RadarTabTransformer(
-    #     categories = (10, 5, 6, 5), # dyn_prop / is_quality_valid / ambig_state / invalid_state
-    #     # tuple containing the number of unique values within each category
-    #     num_continuous = 14,                #
-    #     dim = 16,                           # dimension, paper set at 32
-    #     dim_out = 4,                        # binary prediction, but could be anything
-    #     depth = 4,                          # depth, paper recommended 6
-    #     heads = 4,                          # heads, paper recommends 8
-    #     attn_dropout = 0.1,                 # post-attention dropout
-    #     ff_dropout = 0.1,                   # feed forward dropout
-    #     mlp_hidden_mults = (4, 2),          # relative multiples of each hidden dimension of the last mlp to logits
-    #     mlp_act = nn.ReLU(),                # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-    #     continuous_mean_std = None,
-    #     shared_categ_dim_divisor = 4
-    #     # (optional) - normalize the continuous values before layer norm
-    # )
-
-    # x_categ = torch.randint(0, 5, (1, 4))     # category values, from 0 - max number of categories, in the order as passed into the constructor above
-    # x_cont = torch.randn(1, 14)               # assume continuous values are already normalized individually
-
-    # Tab_model = Tab_model.to(device)
-    # Tab_model = torch.nn.DataParallel(Tab_model, device_ids=[0,1])
-
-    # parameters = list(Tab_model.parameters())
-    # if use_scheduler:
-    #     optimizer, scheduler = fetch_optimizer(lr, weight_decay, 1e-8, max_iters, Tab_model.parameters())
-    # else:
-    #     optimizer = torch.optim.Adam(Tab_model.parameters, lr=lr, weight_decay=weight_decay)
-    # total_params = sum(p.numel() for p in Tab_model.parameters() if p.requires_grad)
-    # print('total_params', total_params)
-    # x_categ = torch.cat((rad_data[:,:,3:4], rad_data[:,:,10:12], rad_data[:,:,14:16]), dim=2).to(torch.int64)
-    # x_cont = torch.cat((rad_data[:,:,:3], rad_data[:,:,5:10], rad_data[:,:,12:14], rad_data[:,:,16:]), dim=2)
-
-    # pred = torch.zeros((rad_data.shape[0], rad_data.shape[1], 4))
-
-    # for i in range(0, rad_data.shape[0]):
-    #     pred[i, :, :] = Tab_model(x_categ[i], x_cont[i])
-######################################################################
-
-    # occ_mem0 = vox_util.voxelize_xyz(xyz_cam0, Z, Y, X, assert_cube=False)
-    # rad_occ_mem0 = vox_util.voxelize_xyz(rad_xyz_cam0, Z, Y, X, assert_cube=False)
-    # metarad_occ_mem0 = vox_util.voxelize_xyz_and_feats(rad_xyz_cam0, pred, Z, Y, X, assert_cube=False)
-
-    # if not (model.module.use_radar or model.module.use_lidar):
-    #     in_occ_mem0 = None
-    # elif model.module.use_lidar:
-    #     assert(model.module.use_radar==False) # either lidar or radar, not both
-    #     assert(model.module.use_metaradar==False) # either lidar or radar, not both
-    #     in_occ_mem0 = occ_mem0
-    # elif model.module.use_radar and model.module.use_metaradar:
-    #     in_occ_mem0 = metarad_occ_mem0
-    # elif model.module.use_radar:
-    #     in_occ_mem0 = rad_occ_mem0
-    # elif model.module.use_metaradar:
-    #     assert(False) # cannot use_metaradar without use_radar
-
     cam0_T_camXs = cam0_T_camXs
 
     lrtlist_cam0_g = lrtlist_cam0
@@ -334,7 +275,7 @@ def main(
         do_shuffle_cams=True,
         # cuda
         device_ids=[0,1],
-        idempotency=False # should be dir
+        idempotency=False, # should be dir
         # tab_transformer_args
         dim_feat=4, 
         depth=6, 
