@@ -298,12 +298,18 @@ class Tab_Segnet(nn.Module):
                  rand_flip=False,
                  latent_dim=128,
                  encoder_type="res101",
-                 dim_feat = 4):
+                 dim_feat=4, 
+                 depth=6,
+                 head=8,
+                 shared_divisor=8):
         super(Tab_Segnet, self).__init__()
         assert (encoder_type in ["res101", "res50", "effb0", "effb4"])
                      
         self.dim_out = dim_feat
-
+        self.depth = depth
+        self.head = head
+        self.shared_divisor = shared_divisor
+                     
         self.Z, self.Y, self.X = Z, Y, X
         self.use_radar = use_radar
         self.use_lidar = use_lidar
@@ -385,14 +391,14 @@ class Tab_Segnet(nn.Module):
             num_continuous = 13,                #
             dim = 16,                           # dimension, paper set at 32
             dim_out = self.dim_out,                        # binary prediction, but could be anything
-            depth = 6,                          # depth, paper recommended 6
-            heads = 8,                          # heads, paper recommends 8
+            depth = self.depth,                          # depth, paper recommended 6
+            heads = self.head,                          # heads, paper recommends 8
             attn_dropout = 0.1,                 # post-attention dropout
             ff_dropout = 0.1,                   # feed forward dropout
                 mlp_hidden_mults = (4, 2),          # relative multiples of each hidden dimension of the last mlp to logits
             mlp_act = nn.ReLU(),                # activation for final mlp, defaults to relu, but could be anything else (selu etc)
             continuous_mean_std = None,
-            shared_categ_dim_divisor = 8
+            shared_categ_dim_divisor = self.shared_divisor
             # (optional) - normalize the continuous values before layer norm
         )
 
