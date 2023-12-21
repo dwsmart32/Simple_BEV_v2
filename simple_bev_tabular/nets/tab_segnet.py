@@ -425,14 +425,14 @@ class Tab_Segnet(nn.Module):
         x_cont = torch.cat((rad_data_1[:,:,:3], rad_data_1[:,:,5:10], rad_data_1[:,:,12:14], rad_data_1[:,:,16:]), dim=2)
 
         #pred = torch.zeros((rad_data_1.shape[0], rad_data_1.shape[1], 8))
-        pred = torch.stack((self.Tab_model(x_categ[0], x_cont[0]),self.Tab_model(x_categ[1], x_cont[1])), dim=0)
+        #pred = torch.stack((self.Tab_model(x_categ[0], x_cont[0]),self.Tab_model(x_categ[1], x_cont[1])), dim=0)
         #pred = torch.cat((self.Tab_model(x_categ[0], x_cont[0]),self.Tab_model(x_categ[1], x_cont[1])), dim=0)
 
 #         for i in range(0, rad_data_1.shape[0]):
 #              pred[i, :, :] = self.Tab_model(x_categ[i], x_cont[i])
         #import ipdb; ipdb.set_trace()
         # pred = torch.stack([self.Tab_model(x_categ[0], x_cont[0]), self.Tab_model(x_categ[1], x_cont[1])])
-        # pred = torch.unsqueeze(self.Tab_model(x_categ[0], x_cont[0]), dim=0)
+        pred = torch.unsqueeze(self.Tab_model(x_categ[0], x_cont[0]), dim=0)
         #print("check shape :", self.Tab_model(x_categ[0], x_cont[0]).shape)
         rad_occ_mem0 = vox_util.voxelize_xyz_and_feats(rad_data_2, pred, self.Z, self.Y, self.X, assert_cube=False)
 
