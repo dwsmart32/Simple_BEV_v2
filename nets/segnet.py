@@ -351,8 +351,8 @@ class TinyUNet(nn.Module):
     def make_down_conv(self, in_channels, out_channels, padding=1):
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=False),
-            SparseInstanceNorm2d(out_channels),
-            # nn.InstanceNorm2d(out_channels),
+            # SparseInstanceNorm2d(out_channels),
+            nn.InstanceNorm2d(out_channels),
             # nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=True),
             nn.LeakyReLU(0.2, inplace=True)
         )
@@ -522,7 +522,7 @@ class KalmanFuser(nn.Module):
             var = pred_var - log_inverse_kalman_gain2
 
             expected_mu = F_curr / inverse_kalman_gain2 * expected_mu + z_mean / inverse_kalman_gain1
-            expected_var = torch.logaddexp(2*(logF_curr - log_inverse_kalman_gain2) + expected_var, z_logvar - 2*inverse_kalman_gain1)
+            expected_var = torch.logaddexp(2*(logF_curr - log_inverse_kalman_gain2) + expected_var, z_logvar - 2*log_inverse_kalman_gain1)
 
             # TODO: debug
             self.log_qs.append(logQ_curr)
