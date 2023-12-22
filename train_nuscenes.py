@@ -240,11 +240,12 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     total_loss += offset_uncertainty_loss
     original_loss = total_loss
 
-    z_posteriors = kalman_stats['z_posteriors']
-    z_priors = kalman_stats['z_priors']
-    radar_recons = kalman_stats['radar_recons']
+    # z_posteriors = kalman_stats['z_posteriors']
+    # z_priors = kalman_stats['z_priors']
     camera_nll = kalman_stats['camera_nll']
-    camera_kld_loss = kalman_stats['camera_kld_loss']
+    radar_recons = kalman_stats['radar_recons']
+    obser_kld_loss = kalman_stats['klds']
+    # camera_kld_loss = kalman_stats['camera_kld_loss']
     
     nsweeps = 3 # HACK: hard-coded
     radar_recon = torch.zeros(np.prod(meta_rad.shape[:2]), 15 + 2 + 5 + 18 + 8 + 10, device=meta_rad.device)
@@ -282,16 +283,18 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     # radar_recon_loss = (radar_recon_losses / model.module.radar_recon_weights).sum() / radar_recon_points
     radar_recon_loss = radar_recon_losses.sum() / radar_recon_points
     camera_recon_loss = camera_nll.mean()
-    camera_kld_loss = camera_kld_loss.mean()
+    ## camera_kld_loss = camera_kld_loss.mean()
     # state_kld_loss = kl_divergence(Normal(s_init[0], s_init[1]), Normal(torch.zeros_like(s_init[0]), torch.ones_like(s_init[1]))).mean()
     # obser_kld_loss = sum([kl_divergence(Normal(z_posterior[0], z_posterior[1]), Normal(z_prior[0], z_prior[1])).mean() for z_posterior, z_prior in zip(z_posteriors, z_priors)])
     # state_kld_loss = (((2*s_init[1]).exp() + s_init[0].square())/2 - s_init[1] - 1/2).mean()
     # obser_kld_loss = sum([(((2*z_posterior[1]).exp() + (z_posterior[0] - z_prior[0]).square())/(2*(2*z_prior[1]).exp())).mean() + (z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
     # obser_kld_loss = sum([((z_posterior[1] + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1])).mean() + 0.5*(z_prior[1].log() - z_posterior[1].log()).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
-    obser_kld_loss = sum([((z_posterior[1].exp() + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1].exp())).mean() + 0.5*(z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+    ## obser_kld_loss = sum([((z_posterior[1].exp() + (z_posterior[0] - z_prior[0]).square())/(2*z_prior[1].exp())).mean() + 0.5*(z_prior[1] - z_posterior[1]).mean() - 1/2 for z_posterior, z_prior in zip(z_posteriors, z_priors)])
+    obser_kld_loss = sum(obser_kld_loss).mean()
 
     # total_loss = total_loss + 0.001 * radar_recon_loss + 0.0001 * (camera_recon_loss + state_kld_loss + obser_kld_loss)
-    total_loss = total_loss + 0.1 * radar_recon_loss + 1.0 * (camera_recon_loss + obser_kld_loss + camera_kld_loss)
+    ## total_loss = total_loss + 0.1 * radar_recon_loss + 1.0 * (camera_recon_loss + obser_kld_loss + camera_kld_loss)
+    total_loss = total_loss + 0.1 * radar_recon_loss + 1.0 * (camera_recon_loss + obser_kld_loss)
 
     seg_bev_e_round = torch.sigmoid(seg_bev_e).round()
     intersection = (seg_bev_e_round*seg_bev_g*valid_bev_g).sum(dim=[1,2,3])
@@ -312,7 +315,7 @@ def run_model(model, loss_fn, d, device='cuda:0', sw=None):
     metrics['camera_recon_loss'] = camera_recon_loss.item()
     # metrics['state_kld_loss'] = state_kld_loss.item()
     metrics['obser_kld_loss'] = obser_kld_loss.item()
-    metrics['camera_kld_loss'] = camera_kld_loss.item()
+    # metrics['camera_kld_loss'] = camera_kld_loss.item()
 
     if sw is not None and sw.save_this:
         # if model.module.use_radar or model.module.use_lidar:
@@ -584,7 +587,7 @@ def main(
         sw_t.summ_scalar('stats/radar_recon_loss', metrics['radar_recon_loss'])
         sw_t.summ_scalar('stats/camera_recon_loss', metrics['camera_recon_loss'])
         sw_t.summ_scalar('stats/obser_kld_loss', metrics['obser_kld_loss'])
-        sw_t.summ_scalar('stats/camera_kld_loss', metrics['camera_kld_loss'])
+        # sw_t.summ_scalar('stats/camera_kld_loss', metrics['camera_kld_loss'])
         # if sw_t is not None and global_step % 50 == 0:
         #     with torch.no_grad():
         #         # writer_t.add_scalars('stats/radar_recon_weights', metrics['radar_recon_weights'], global_step)

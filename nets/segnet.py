@@ -285,6 +285,9 @@ class Encoder_eff(nn.Module):
         x = self.depth_layer(x)  # feature and depth head
         return x
 
+def kl_divergence(mu1, logvar1, mu2, logvar2):
+    return 0.5 * (logvar2 - logvar1 + (logvar1.exp() + (mu1 - mu2).square())/logvar2.exp() - 1).mean()
+
 class SparseInstanceNorm2d(nn.Module):
     def __init__(self, num_features, eps=1e-5, momentum=0.1, use_running_stats_in_eval=True):
         super(SparseInstanceNorm2d, self).__init__()
@@ -328,8 +331,8 @@ class TinyUNet(nn.Module):
         super().__init__()
 
         self.in_conv = nn.Sequential(
-            nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=False),
-            # nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=True),
+            # nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=False),
+            nn.Conv2d(in_channels, base_channels, 3, padding=1, bias=True),
             nn.LeakyReLU(0.2, inplace=True)
         ) # (C, 224, 224)
 
@@ -347,10 +350,10 @@ class TinyUNet(nn.Module):
 
     def make_down_conv(self, in_channels, out_channels, padding=1):
         return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=False),
-            SparseInstanceNorm2d(out_channels),
+            # nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=False),
+            # SparseInstanceNorm2d(out_channels),
             # nn.InstanceNorm2d(out_channels),
-            # nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=True),
+            nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=True),
             nn.LeakyReLU(0.2, inplace=True)
         )
 
@@ -430,9 +433,10 @@ class KalmanFuser(nn.Module):
         raise RuntimeError('specify either var or logvar!')
 
     def forward(self, feat_bev_, metarad_occ_mem0, epsilon=1e-8):
-        z_posteriors = []
-        z_priors = []
+        # z_posteriors = []
+        # z_priors = []
         radar_recons = []
+        klds = []
 
         # TODO: debug
         self.log_vars = []
@@ -470,21 +474,29 @@ class KalmanFuser(nn.Module):
                 # var = 1
                 var = 0
 
+                expected_mu = 0
+                expected_var = 0
+
+            logF_curr_sq = 2*logF_curr
+            logH_curr_sq = 2*logH_curr
+
             pred_mu = F_curr * mu
             # pred_var = F_curr.square() * var + torch.exp(logQ_curr)
             # res_var = H_curr.square() * pred_var + torch.exp(logR_curr)
             ## logF_curr = F_curr.abs().log()
             ## logH_curr = (H_curr.abs() + epsilon).log()
-            pred_var = torch.logaddexp(2*logF_curr + var, logQ_curr)
-            res_var = torch.logaddexp(2*logH_curr + pred_var, logR_curr)
+            pred_var = torch.logaddexp(logF_curr_sq + var, logQ_curr)
+            res_var = torch.logaddexp(logH_curr_sq + pred_var, logR_curr)
             z_pred = H_curr * pred_mu
-            z_priors.append((z_pred, res_var))
+            ## z_priors.append((z_pred, res_var))
 
             # z_mean, z_logvar, F_next, H_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
             z_mean, z_logvar, logF_next, logH_next, logQ_next, logR_next = self.feat_to_mats(radar_feat).split([self.base_channels] * 6, dim=1)
             # # z_logvar = -F.softplus(z_logvar)
             # z_posteriors.append((z_mean, torch.exp(z_logvar)))
-            z_posteriors.append((z_mean, z_logvar))
+            ## z_posteriors.append((z_mean, z_logvar))
+
+            klds.append(kl_divergence(z_mean, z_logvar, logH_curr + logF_curr + expected_mu, res_var) + 0.5*(logH_curr_sq + logF_curr_sq + expected_var - res_var).exp())
 
             z_curr = self.reparameterize(z_mean, logvar=z_logvar) if self.training else z_mean
             z_point = z_curr[index_bev[0], :, index_bev[1], index_bev[2]]
@@ -502,8 +514,15 @@ class KalmanFuser(nn.Module):
             ## mu = pred_mu + kalman_gain.exp() * residual
             ## var = torch.log1p(epsilon - (kalman_gain + logH_curr).exp()) + pred_var
             pseudo_kalman_gain = pred_var + logH_curr - logR_curr
-            mu = pred_mu + residual / (H_curr + (-pseudo_kalman_gain).exp())
-            var = pred_var - torch.log1p((logH_curr + pseudo_kalman_gain).exp())
+            log_inverse_kalman_gain1 = torch.logaddexp(logH_curr, -pseudo_kalman_gain)
+            log_inverse_kalman_gain2 = torch.log1p((logH_curr + pseudo_kalman_gain).exp())
+            inverse_kalman_gain1 = log_inverse_kalman_gain1.exp()
+            inverse_kalman_gain2 = log_inverse_kalman_gain2.exp()
+            mu = pred_mu + residual / inverse_kalman_gain1
+            var = pred_var - log_inverse_kalman_gain2
+
+            expected_mu = F_curr / inverse_kalman_gain2 * expected_mu + z_mean / inverse_kalman_gain1
+            expected_var = torch.logaddexp(2*(logF_curr - log_inverse_kalman_gain2) + expected_var, z_logvar - 2*inverse_kalman_gain1)
 
             # TODO: debug
             self.log_qs.append(logQ_curr)
@@ -534,8 +553,10 @@ class KalmanFuser(nn.Module):
                 ## logH_cam_curr = (H_cam_curr.abs() + epsilon).log()
                 res_var = torch.logaddexp(2*logH_cam_curr + var, logR_cam_curr)
                 # camera_kld_loss = 0.5 * (logR_cam_curr.exp() - logR_cam_curr - 1)
-                camera_nll = residual.square()/(2*res_var.exp())
-                camera_kld_loss = torch.zeros([], device=logR_cam_curr.device)
+                # camera_nll = residual.square()/(2*res_var.exp())
+                # camera_kld_loss = torch.zeros([], device=logR_cam_curr.device)
+
+                camera_nll = 0.5 * ((H_cam_curr.square() * (expected_mu.square() + expected_var.exp())) / res_var.exp()).mean()
 
                 # kalman_gain = var * H_cam_curr / res_var
                 # mu = mu + kalman_gain * residual
@@ -554,11 +575,12 @@ class KalmanFuser(nn.Module):
         # sample = self.reparameterize(mu, var=var) if self.training else mu
         sample = self.reparameterize(mu, logvar=var) if self.training else mu
         kalman_stats = {
-            'z_posteriors': z_posteriors,
-            'z_priors': z_priors,
-            'radar_recons': radar_recons,
+            # 'z_posteriors': z_posteriors,
+            # 'z_priors': z_priors,
             'camera_nll': camera_nll,
-            'camera_kld_loss': camera_kld_loss,
+            'radar_recons': radar_recons,
+            'klds': klds,
+            # 'camera_kld_loss': camera_kld_loss,
         }
 
         # return sample, z_posteriors, z_priors, radar_mses, camera_nll, s_init
