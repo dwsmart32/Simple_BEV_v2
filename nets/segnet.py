@@ -350,10 +350,10 @@ class TinyUNet(nn.Module):
 
     def make_down_conv(self, in_channels, out_channels, padding=1):
         return nn.Sequential(
-            # nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=False),
-            # SparseInstanceNorm2d(out_channels),
+            nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=False),
+            SparseInstanceNorm2d(out_channels),
             # nn.InstanceNorm2d(out_channels),
-            nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=True),
+            # nn.Conv2d(in_channels, out_channels, 4, stride=2, padding=padding, bias=True),
             nn.LeakyReLU(0.2, inplace=True)
         )
 
@@ -496,7 +496,7 @@ class KalmanFuser(nn.Module):
             # z_posteriors.append((z_mean, torch.exp(z_logvar)))
             ## z_posteriors.append((z_mean, z_logvar))
 
-            klds.append(kl_divergence(z_mean, z_logvar, logH_curr + logF_curr + expected_mu, res_var) + 0.5*(logH_curr_sq + logF_curr_sq + expected_var - res_var).exp())
+            klds.append(kl_divergence(z_mean, z_logvar, H_curr * logF_curr * expected_mu, res_var) + 0.5*(logH_curr_sq + logF_curr_sq + expected_var - res_var).exp())
 
             z_curr = self.reparameterize(z_mean, logvar=z_logvar) if self.training else z_mean
             z_point = z_curr[index_bev[0], :, index_bev[1], index_bev[2]]
