@@ -22,6 +22,38 @@ def save(ckpt_dir, optimizer, model, global_step, scheduler=None, model_ema=None
     torch.save(ckpt, model_path)
     print("saved a checkpoint: %s" % (model_path))
 
+def save_idempotency(ckpt_dir, optimizer, model, global_step, scheduler=None, model_ema=None, num_chkpoints=5, keep_latest=5, model_name='model', iou_stack=None, iou_stack_name='iou_stack', iou=None):
+    if not os.path.exists(ckpt_dir):
+        os.makedirs(ckpt_dir)
+ 
+    if len(iou_stack) < num_chkpoints or iou > min(iou_stack.values()):
+        if len(iou_stack) == num_chkpoints:
+            
+            min_epoch = min(iou_stack, key=iou_stack.get)
+            del iou_stack[min_epoch]
+            
+            min_epoch_file = pathlib.Path(ckpt_dir) / f'{model_name}-{min_epoch:09d}.pth'
+            if min_epoch_file.exists():
+                min_epoch_file.unlink()
+
+        iou_stack[global_step] = iou
+
+
+        model_path = f'{ckpt_dir}/{model_name}-{global_step:09d}.pth'
+        ckpt = {'optimizer_state_dict': optimizer.state_dict(), 'model_state_dict': model.state_dict()}
+        
+        if scheduler:
+            ckpt['scheduler_state_dict'] = scheduler.state_dict()
+        if model_ema:
+            ckpt['ema_model_state_dict'] = model_ema.state_dict()
+
+        torch.save(ckpt, model_path)
+        print(f"Saved a checkpoint: {model_path}")
+
+    return iou_stack
+    
+        
+
 
 def load(ckpt_dir, model, optimizer=None, scheduler=None, model_ema=None, step=0, model_name='model', ignore_load=None, device_ids=[0]):
     print('reading ckpt from %s' % ckpt_dir)

@@ -255,6 +255,7 @@ def main(
         log_dir='logs_nuscenes_tabular_rad_seg',
         ckpt_dir='checkpoints/',
         keep_latest=1,
+        num_chkpoints=5,
         init_dir='',
         ignore_load=None,
         load_step=False,
@@ -404,6 +405,7 @@ def main(
         for _ in range(global_step):
             scheduler.step()
     # training loop
+    iou_stack={}
     while global_step < max_iters:
         global_step += 1
 
@@ -525,10 +527,14 @@ def main(
             sw_v.summ_scalar('pooled/offset_loss', offset_pool_v.mean())
 
             model.train()
-
+        print(f'iou_pool_v:{iou_pool_v}')
         # save model checkpoint
         if np.mod(global_step, save_freq)==0:
+            print(f'saving a checkpoint...global_step{global_step}')
+            print(f'iou_stack: {iou_stack}')
             saverloader.save(ckpt_dir, optimizer, model.module, global_step, keep_latest=keep_latest)
+            # iou_stack = saverloader.save_idempotency(ckpt_dir, optimizer, model.module, global_step, num_chkpoints=num_chkpoints, keep_latest=keep_latest, iou_stack=iou_stack, iou=iou_pool_v.mean())
+            
 
         # log lr and time
         current_lr = optimizer.param_groups[0]['lr']
